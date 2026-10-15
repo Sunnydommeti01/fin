@@ -1,5 +1,6 @@
 from pathlib import Path
 from io import BytesIO
+import hashlib
 import re
 import numpy as np
 import pandas as pd
@@ -54,10 +55,13 @@ def parse_dates(v):
     excel=pd.to_datetime(n,unit='D',origin='1899-12-30',errors='coerce')
     return dt.mask(n.between(20000,80000),excel)
 
-@st.cache_data(ttl=90,show_spinner=False)
+@st.cache_data(ttl=600,show_spinner=False,max_entries=4)
 def read_excel(raw):
-    df=pd.read_excel(BytesIO(raw))
+    df=pd.read_excel(BytesIO(raw),engine='openpyxl')
     df.columns=df.columns.astype(str).str.strip()
+    df=df.dropna(how='all').reset_index(drop=True)
+    if df.columns.duplicated().any():
+        raise ValueError('Duplicate Excel column names: '+', '.join(df.columns[df.columns.duplicated()]))
     needed=['Project Value','KW/PHASE','Module','DCR/NON-DCR','Region','INV DATE- BK']
     missing=[x for x in needed if x not in df]
     if missing:raise ValueError('Missing Excel columns: '+', '.join(missing))
@@ -69,10 +73,14 @@ def read_excel(raw):
     df['DCR/NON-DCR']=df['DCR/NON-DCR'].str.upper().str.replace('NON DCR','NON-DCR',regex=False)
     df['INV DATE- BK']=parse_dates(df['INV DATE- BK'])
     df['Month']=df['INV DATE- BK'].dt.strftime('%Y-%m').fillna('Unknown')
+    df['Month']=df['Month'].astype(str)
+    # One Excel row = one project. Do not silently drop repeated lead IDs.
     df['Spending']=df[COSTS].fillna(0).sum(axis=1)
+    df['Missing Cost Fields']=df[COSTS].isna().sum(axis=1)
     df['Profit']=df['Gross Profit'].where(df['Gross Profit'].notna(),df['Project Value']-df['Spending'])
     df['Material Cost']=df['Material Cost'].fillna(0)
     df['Cost Complete']=df[COSTS].notna().all(axis=1)
+    df['Profit Source']=np.where(df['Gross Profit'].notna(),'Excel Gross Profit','Revenue less listed costs')
     return df
 
 def summary(df,keys):
@@ -101,6 +109,9 @@ def bars(t,x,metrics,title,kind='bar',height=280):
             fig.add_trace(go.Bar(x=t[x],y=t[m],name=m,marker_color=COLORS.get(m,'#7c3aed'),text=[lbl(v,m) for v in t[m]],textposition='outside',textfont=dict(size=9),cliponaxis=False))
         fig.update_layout(barmode='group')
     fig_style(fig,height,legend=len(metrics)>1)
+    if len(t)>16:
+        fig.update_traces(textposition='none')
+        st.caption('Labels hidden for crowded charts; use the detailed table below for exact values.')
     fig.update_yaxes(rangemode='tozero',tickformat='.2s')
     st.plotly_chart(fig,use_container_width=True,config={'displayModeBar':False})
 
@@ -120,8 +131,10 @@ def heat(t,rows,cols,metric,title):
     if p.empty:return
     zz=p.to_numpy(dtype=float)
     txt=[[lbl(v,metric) for v in line] for line in zz]
-    fig=go.Figure(go.Heatmap(z=zz,x=[str(v) for v in p.columns],y=[str(v) for v in p.index],text=txt,texttemplate='%{text}',textfont=dict(size=10),colorscale='RdYlGn' if metric in ['Profit','Margin %'] else 'Blues',colorbar=dict(title='%',len=.7) if metric=='Margin %' else dict(len=.7),hovertemplate='%{y} × %{x}<br>%{text}<extra></extra>'))
-    fig_style(fig,min(530,max(260,90+len(p)*38)))
+    show_text=(len(p.index)*len(p.columns)<=160)
+    fig=go.Figure(go.Heatmap(z=zz,x=[str(v) for v in p.columns],y=[str(v) for v in p.index],text=txt,texttemplate='%{text}' if show_text else None,textfont=dict(size=10),colorscale='RdYlGn' if metric in ['Profit','Margin %'] else 'Blues',colorbar=dict(title='%',len=.7) if metric=='Margin %' else dict(len=.7),hovertemplate='%{y} × %{x}<br>%{text}<extra></extra>'))
+    fig_style(fig,min(650,max(280,90+len(p)*30)))
+    if not show_text:st.caption('Dense heatmap: hover for exact amounts, or open Interactive data details for filterable values.')
     st.plotly_chart(fig,use_container_width=True,config={'displayModeBar':False})
 
 def pivot_table(t, key, height=390, export_name=None):
@@ -246,8 +259,10 @@ st.caption('Solar project profitability  •  Month → Region → KW → Module
 with st.sidebar:
     st.markdown('### FIN · Data source')
     up=st.file_uploader('Upload replacement Excel (optional)',type=['xlsx'])
-    files=sorted(ROOT.glob('*.xlsx'))
-    path=next((f for f in files if f.name=='FIN_Financial_Sample_100_Projects.xlsx'),files[0] if files else None)
+    files=sorted((f for f in ROOT.glob('*.xlsx') if not f.name.startswith('~$')),key=lambda f:f.name)
+    preferred=next((f for f in files if f.name.lower() in ('fin_data.xlsx','financial_data.xlsx')),None)
+    default_index=files.index(preferred) if preferred else 0
+    path=st.selectbox('Excel file in repository',files,index=default_index,format_func=lambda f:f.name) if files and up is None else None
     st.caption('Source: '+('Uploaded Excel' if up else path.name if path else 'No Excel file'))
 if not up and not path:
     st.error('Place your Excel file beside app.py, or upload it using the sidebar.');st.stop()
@@ -260,18 +275,24 @@ with st.sidebar:
         values=sorted(df[dim].dropna().unique().tolist(),key=str)
         picks[dim]=st.multiselect(dim,values,default=values,key='global_'+dim)
     st.caption('Month uses INV DATE- BK. Revenue = Project Value; Profit = Gross Profit where present.')
+    st.caption(f'Source rows: {len(df):,} · Months: {df.Month.nunique()}')
 d=df.copy()
 for dim in DIM:d=d[d[dim].isin(picks[dim])]
 if d.empty:st.warning('No records match the filters.');st.stop()
+if len(d)>0 and d['INV DATE- BK'].isna().any():
+    st.caption(f'ℹ️ {int(d["INV DATE- BK"].isna().sum()):,} rows have missing/unreadable invoice dates; they appear as Unknown Month and are excluded from monthly charts.')
 rev=d['Project Value'].sum();sp=d['Spending'].sum();pr=d['Profit'].sum()
 cols=st.columns(5)
 for c,name,val in zip(cols,['Projects','Revenue','Spending','Gross profit','Profit margin'],[f'{len(d):,}',money(rev),money(sp),money(pr),f'{pr/rev*100:.1f}%' if rev else '—']):c.metric(name,val)
+if d['Missing Cost Fields'].gt(0).any():
+    st.caption(f'⚠️ {int(d["Missing Cost Fields"].gt(0).sum()):,} projects have missing cost fields. Missing values are provisionally treated as ₹0 in Spending.')
 if abs(rev-sp-pr)>max(100,abs(rev)*.005):
     st.caption(f'⚠️ Reconciliation: Project Value − listed spending differs from Gross Profit by {money(rev-sp-pr)}. Check the Excel profit definition.')
 
 st.markdown('### Performance story')
 OPTIONS=['All 11 reports','01 · Month-wise projects & revenue','02 · Region-wise projects & revenue','03 · Financial trend','04 · Monthly profit margin','05 · Month × Region','06 · KW-wise revenue, spending & profit','07 · KW × Month','08 · KW × Region','09 · Profit heatmap','10 · DCR × Region × Month','11 · Top 5 Intelligence','Custom Pivot Builder']
-nav=st.selectbox('Jump to report',OPTIONS,label_visibility='collapsed')
+nav=st.selectbox('Jump to report',OPTIONS,index=1,label_visibility='collapsed')
+st.caption('Select All 11 reports to view the full story; one report at a time is faster for larger datasets.')
 def show(n):return nav=='All 11 reports' or nav.startswith(f'{n:02d} ·')
 month=summary(d[d.Month!='Unknown'],['Month']).sort_values('Month')
 region=summary(d,['Region']).sort_values('Revenue',ascending=False)
@@ -501,4 +522,4 @@ if nav in ('All 11 reports','Custom Pivot Builder'):
             t=summary(d,dims)[dims+metrics].sort_values(dims)
             pivot_table(t,'v7_custom_pivot',height=380,export_name='FIN_custom_pivot.csv')
         else:st.info('Choose at least one dimension and one measure.')
-st.caption('Financial note: Missing cost components count as zero in spending. Confirm Gross Profit and Vendor Margin accounting before treating profit leakage as final.')
+st.caption('Financial note: Each Excel row counts as one project. Missing cost components count as zero in spending; validate Gross Profit and Vendor Margin accounting before relying on profitability rankings.')
