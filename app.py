@@ -47,15 +47,24 @@ def load_data(raw=None):
             excel=pd.to_datetime(n,unit='D',origin='1899-12-30',errors='coerce')
             df[c]=dates.mask(n.between(20000,80000),excel)
     df['Spending']=df[COSTS].fillna(0).sum(axis=1)
+    df['Cost Data Complete']=df[COSTS].notna().all(axis=1)
+    df['Material Cost / KW']=np.where(pd.to_numeric(df['KW/PHASE'].str.extract(r'(\d+(?:\.\d+)?)')[0],errors='coerce').gt(0),df['Material Cost']/pd.to_numeric(df['KW/PHASE'].str.extract(r'(\d+(?:\.\d+)?)')[0],errors='coerce'),np.nan)
     df['Profit']=df['Gross Profit'].where(df['Gross Profit'].notna(),df['Project Value']-df['Spending'])
     df['Margin %']=np.where(df['Project Value'].ne(0),df['Profit']/df['Project Value']*100,np.nan)
     df['Month']=df['INV DATE- BK'].dt.strftime('%Y-%m').fillna('Unknown') if 'INV DATE- BK' in df else 'Unknown'
+    df['Profit Gap']=df['Project Value']-df['Spending']-df['Profit']
+    df['Cost / Revenue %']=np.where(df['Project Value'].gt(0),df['Spending']/df['Project Value']*100,np.nan)
+    df['Profit / KW']=np.where(pd.to_numeric(df['KW/PHASE'].str.extract(r'(\d+(?:\.\d+)?)')[0],errors='coerce').gt(0),df['Profit']/pd.to_numeric(df['KW/PHASE'].str.extract(r'(\d+(?:\.\d+)?)')[0],errors='coerce'),np.nan)
     return df
 
 def roll(d,keys):
     t=d.groupby(keys,dropna=False,observed=True).agg(Projects=('Project Value','size'),Revenue=('Project Value','sum'),Spending=('Spending','sum'),Profit=('Profit','sum')).reset_index()
     t['Margin %']=np.where(t['Revenue'].ne(0),100*t['Profit']/t['Revenue'],np.nan)
     t['Profit / Project']=t['Profit']/t['Projects']
+    t['Spend / Project']=t['Spending']/t['Projects']
+    t['Material Cost']=d.groupby(keys,dropna=False,observed=True)['Material Cost'].sum().to_numpy()
+    t['Material / Project']=t['Material Cost']/t['Projects']
+    t['Loss Projects']=d.assign(_loss=d['Profit']<0).groupby(keys,dropna=False,observed=True)['_loss'].sum().to_numpy()
     return t
 
 def layout(fig,height=350):
@@ -66,7 +75,7 @@ def layout(fig,height=350):
 def chart(t,key,title,columns=('Revenue','Spending','Profit'),height=365):
     tmp=t.melt(id_vars=[key],value_vars=list(columns),var_name='Metric',value_name='Amount')
     tmp['Label']=tmp['Amount'].map(inr)
-    fig=px.bar(tmp,x=key,y='Amount',color='Metric',barmode='group',text='Label',title=title,color_discrete_map={'Revenue':BLUE,'Spending':AMBER,'Profit':GREEN})
+    fig=px.bar(tmp,x=key,y='Amount',color='Metric',barmode='group',text='Label',title=title,color_discrete_map={'Revenue':BLUE,'Spending':AMBER,'Profit':GREEN,'Material Cost':'#805ad5','Spend / Project':'#e99a22','Material / Project':'#805ad5'})
     fig.update_traces(textposition='outside',textfont_size=10,cliponaxis=False,hovertemplate='%{x}<br>%{fullData.name}: %{text}<extra></extra>')
     fig.update_layout(uniformtext_minsize=9,uniformtext_mode='show',bargap=.25)
     layout(fig,height)
@@ -80,7 +89,7 @@ def counts(t,key,title):
 
 def table(t):
     view=t.copy()
-    for c in ['Revenue','Spending','Profit','Profit / Project']:
+    for c in ['Revenue','Spending','Profit','Profit / Project','Spend / Project','Material Cost','Material / Project']:
         if c in view:view[c]=view[c].map(inr)
     if 'Margin %' in view:view['Margin %']=view['Margin %'].map(lambda v:f'{v:.1f}%' if pd.notna(v) else '—')
     st.dataframe(view,hide_index=True,use_container_width=True,height=min(430,42+len(view)*35))
@@ -116,7 +125,7 @@ a,b,c,e,f=st.columns(5)
 a.metric('Projects',f'{len(d):,}');b.metric('Revenue',inr(rev));c.metric('Spending',inr(spend));e.metric('Profit / Savings',inr(profit));f.metric('Profit Margin',f'{profit/rev*100:.1f}%' if rev else '—')
 if abs(rev-spend-profit)>max(100,abs(rev)*.005):st.warning(f'Accounting check: Revenue − Spending differs from reported Gross Profit by {inr(rev-spend-profit)}. Profit uses the Excel Gross Profit column when available.')
 
-tabs=st.tabs(['Monthly Story','Region Story','KW-wise','Module-wise','KW × Module','DCR Analysis','Costs & Projects'])
+tabs=st.tabs(['Monthly Story','Region Story','Month × Region','Hidden Insights','KW-wise','Module-wise','KW × Module','DCR Analysis','Costs & Projects'])
 with tabs[0]:
     t=roll(d[d['Month']!='Unknown'],'Month').sort_values('Month')
     if t.empty:st.info('No valid invoice dates available for monthly trends.')
@@ -130,6 +139,17 @@ with tabs[0]:
         with y:
             st.markdown('#### Month-by-month figures');table(t)
         insights(t,'Month')
+        st.markdown('#### 4 · Monthly material cost and average spending')
+        c1,c2=st.columns(2)
+        with c1: chart(t,'Month','Material cost by invoice month',('Material Cost',),340)
+        with c2: chart(t,'Month','Average spend per project',('Spend / Project',),340)
+        st.markdown('#### 5 · Month-by-month spending breakdown')
+        monthly_cost=d[d['Month']!='Unknown'].groupby('Month')[COSTS].sum().reset_index().sort_values('Month')
+        cm=monthly_cost.melt('Month',var_name='Cost Type',value_name='Amount')
+        fig=px.bar(cm,x='Month',y='Amount',color='Cost Type',barmode='stack',text=cm['Amount'].map(inr),title='Cost composition · all values in ₹')
+        fig.update_traces(textposition='inside',textfont_size=10)
+        layout(fig,400);st.plotly_chart(fig,use_container_width=True)
+        table(t[['Month','Projects','Revenue','Spending','Material Cost','Spend / Project','Material / Project','Profit','Margin %','Loss Projects']])
         if len(t)>1:
             z=t.copy();z['Revenue Growth %']=z['Revenue'].pct_change()*100;z['Spending Growth %']=z['Spending'].pct_change()*100
             hits=z[(z['Spending Growth %']>z['Revenue Growth %']) & z['Revenue Growth %'].notna()]
@@ -138,11 +158,80 @@ with tabs[1]:
     t=roll(d,'Region').sort_values('Revenue',ascending=False)
     counts(t,'Region','1 · Projects by region');chart(t,'Region','2 · Regional revenue, spending & profit')
     st.markdown('#### 3 · Region profitability');table(t);insights(t,'Region')
+    c1,c2=st.columns(2)
+    with c1: chart(t,'Region','Average spend by region',('Spend / Project',),340)
+    with c2: chart(t,'Region','Material cost by region',('Material Cost',),340)
 with tabs[2]:
-    t=roll(d,'KW/PHASE').sort_values('KW/PHASE');chart(t,'KW/PHASE','KW-wise spending & profit',('Spending','Profit'));table(t);insights(t,'KW/PHASE')
+    st.subheader('Month × Region · Where growth is profitable')
+    mr=roll(d[d['Month']!='Unknown'],['Month','Region'])
+    if mr.empty: st.info('Valid invoice dates are required for month × region analysis.')
+    else:
+        metric=st.selectbox('Heatmap metric',['Profit','Spending','Revenue','Material Cost','Margin %','Spend / Project','Projects','Loss Projects'],key='mr_metric')
+        pivot=mr.pivot(index='Region',columns='Month',values=metric)
+        z=pivot.to_numpy(dtype=float)
+        labels=[[f'{v:.1f}%' if metric=='Margin %' else str(int(v)) if metric in ('Projects','Loss Projects') else inr(v) if np.isfinite(v) else '—' for v in row] for row in z]
+        fig=go.Figure(go.Heatmap(z=z,x=list(pivot.columns),y=list(pivot.index),text=labels,texttemplate='%{text}',textfont=dict(size=11),colorscale='RdYlGn' if metric in ('Profit','Margin %') else 'Blues',colorbar=dict(title=metric),hovertemplate='Region: %{y}<br>Month: %{x}<br>'+metric+': %{text}<extra></extra>'))
+        layout(fig,max(350,65*len(pivot)));st.plotly_chart(fig,use_container_width=True)
+        st.markdown('#### Month × Region financial table')
+        table(mr.sort_values(['Month','Profit']))
+        insights(mr.assign(Group=mr['Month']+' · '+mr['Region']),'Group')
+
 with tabs[3]:
-    t=roll(d,'Module').sort_values('Revenue',ascending=False);chart(t,'Module','Module-wise spending & profit',('Spending','Profit'));table(t);insights(t,'Module')
+    st.subheader('Hidden insights · Profit leakage and cost efficiency')
+    st.caption('These are diagnostic signals, not proof of the underlying cause. Compare similar project types before making decisions.')
+    m=d['Profit'].lt(0);los=d[m]
+    topcost=d.nlargest(min(10,len(d)),'Spending')
+    high_spend_cut=d['Spending'].quantile(.90)
+    high=d[d['Spending']>=high_spend_cut]
+    avg=d['Spending'].mean();median=d['Spending'].median()
+    x1,x2,x3,x4=st.columns(4)
+    x1.metric('Avg spend / project',inr(avg))
+    x2.metric('Median spend',inr(median))
+    x3.metric('Highest project spend',inr(d['Spending'].max()))
+    x4.metric('Top 10% spend share',f'{high["Spending"].sum()/spend*100:.1f}%' if spend else '—')
+    x1,x2,x3,x4=st.columns(4)
+    x1.metric('Loss-making projects',f'{m.sum()} / {len(d)}')
+    x2.metric('Gross losses',inr(los['Profit'].sum()))
+    x3.metric('Projects below 10% margin',int((d['Margin %']<10).sum()))
+    x4.metric('Incomplete cost records',int((~d['Cost Data Complete']).sum()))
+    st.markdown('#### 1 · Cost intensity by project segment')
+    grouping=st.selectbox('Compare segments',['KW/PHASE','Module','DCR/NON-DCR','Region'],key='hidden_segment')
+    seg=roll(d,grouping).sort_values('Spend / Project',ascending=False)
+    c1,c2=st.columns(2)
+    with c1:chart(seg,grouping,'Average spend per project',('Spend / Project',),370)
+    with c2:chart(seg,grouping,'Average material cost per project',('Material / Project',),370)
+    st.markdown('#### 2 · Profit vs project scale')
+    fig=px.scatter(d,x='Project Value',y='Profit',size='Spending',color='Region',hover_data=['KW/PHASE','Module','DCR/NON-DCR'],title='Projects with high revenue but weak profits',size_max=24)
+    fig.add_hline(y=0,line_dash='dash',line_color=RED)
+    layout(fig,390);fig.update_xaxes(tickprefix='₹');fig.update_yaxes(tickprefix='₹')
+    st.plotly_chart(fig,use_container_width=True)
+    st.markdown('#### 3 · Largest individual spending and losses')
+    st.caption('High absolute spending may simply reflect a larger KW project; review profit margin and spend per KW alongside totals.')
+    ids=[c for c in ["RNG's",'LEAD','CUS Name','KW/PHASE','Module','Region','Project Value','Spending','Material Cost','Profit','Margin %','Profit / KW'] if c in d]
+    c1,c2=st.columns(2)
+    with c1:
+        st.markdown('**Top 10 highest-spending projects**')
+        st.dataframe(topcost[ids],hide_index=True,use_container_width=True,height=350)
+    with c2:
+        st.markdown('**Bottom 10 projects by profit**')
+        st.dataframe(d.nsmallest(min(10,len(d)),'Profit')[ids],hide_index=True,use_container_width=True,height=350)
+    st.markdown('#### 4 · Unusual material cost per KW')
+    kw=d.dropna(subset=['Material Cost / KW']).copy()
+    if not kw.empty:
+        baseline=kw['Material Cost / KW'].median()
+        outliers=kw[kw['Material Cost / KW']>baseline*1.5].sort_values('Material Cost / KW',ascending=False)
+        st.markdown(f'Median material cost / KW: **{inr(baseline)}**. Projects exceeding **1.5× the median**: **{len(outliers)}**. This is a screening rule, not an automatic cost overrun.')
+        st.dataframe(outliers[[c for c in ["RNG's",'LEAD','KW/PHASE','Module','DCR/NON-DCR','Region','Material Cost','Material Cost / KW','Profit'] if c in outliers]].head(30),hide_index=True,use_container_width=True,height=270)
+    else:st.info('KW values could not be parsed as numbers for cost-per-KW analysis.')
+    gap=d['Profit Gap'].abs()>np.maximum(100,d['Project Value'].abs()*.005)
+    if gap.any():st.warning(f'{int(gap.sum())} projects have a mismatch between Project Value − listed costs and Gross Profit. Review whether Dynamic Price, taxes or additional costs explain the gap.')
+    insights(seg,grouping)
+
 with tabs[4]:
+    t=roll(d,'KW/PHASE').sort_values('KW/PHASE');chart(t,'KW/PHASE','KW-wise spending & profit',('Spending','Profit'));table(t);insights(t,'KW/PHASE')
+with tabs[5]:
+    t=roll(d,'Module').sort_values('Revenue',ascending=False);chart(t,'Module','Module-wise spending & profit',('Spending','Profit'));table(t);insights(t,'Module')
+with tabs[6]:
     t=roll(d,['KW/PHASE','Module']);pv=t.pivot(index='KW/PHASE',columns='Module',values='Profit').fillna(0)
     if not pv.empty:
         fig=px.imshow(pv,aspect='auto',text_auto=False,color_continuous_scale='RdYlGn',color_continuous_midpoint=0,title='Profit heatmap · KW × Module')
@@ -150,10 +239,10 @@ with tabs[4]:
             for j,mod in enumerate(pv.columns):fig.add_annotation(x=mod,y=kw,text=inr(pv.iloc[i,j]),showarrow=False,font=dict(size=11,color=NAVY))
         layout(fig,max(330,65*len(pv)));st.plotly_chart(fig,use_container_width=True)
     table(t);insights(t.assign(Combination=t['KW/PHASE']+' / '+t['Module']),'Combination')
-with tabs[5]:
+with tabs[7]:
     t=roll(d,'DCR/NON-DCR');chart(t,'DCR/NON-DCR','DCR vs Non-DCR spending & profit',('Spending','Profit'));table(t);insights(t,'DCR/NON-DCR')
     st.markdown('#### DCR × KW × Module');table(roll(d,['DCR/NON-DCR','KW/PHASE','Module']).sort_values('Profit'))
-with tabs[6]:
+with tabs[8]:
     costs=d[COSTS].sum().sort_values(ascending=False).reset_index();costs.columns=['Cost','Amount'];costs['Label']=costs['Amount'].map(inr)
     fig=px.bar(costs,x='Cost',y='Amount',text='Label',title='Cost drivers · Total spending by type',color_discrete_sequence=[AMBER]);fig.update_traces(textposition='outside',cliponaxis=False);layout(fig);st.plotly_chart(fig,use_container_width=True)
     biggest=costs.iloc[0];st.markdown(f'**Largest cost component:** {biggest["Cost"]} — {inr(biggest["Amount"])} ({biggest["Amount"]/spend*100:.1f}% of total spending).' if spend else 'No spending recorded.')
