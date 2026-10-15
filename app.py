@@ -99,17 +99,73 @@ def heat(t,rows,cols,metric,title):
     fig_style(fig,min(550,max(245,75+len(p)*37)))
     st.plotly_chart(fig,use_container_width=True,config={'displayModeBar':False})
 
-def pivot_table(t,key):
-    st.markdown('**Interactive pivot · Excel-style filters**')
-    st.caption('Use the filter row beneath each column header, or sort by clicking a header. Select dimensions and metrics below to rebuild the pivot.')
+def pivot_table(t, key, height=390, export_name=None):
+    """Excel-style searchable checklist filters in each column menu."""
+    st.caption('Filter any column using its ☰ menu: search, Select All, Apply or Clear. Sort by clicking a header.')
     try:
-        from st_aggrid import AgGrid,GridOptionsBuilder
-        gb=GridOptionsBuilder.from_dataframe(t)
-        gb.configure_default_column(sortable=True,filter=True,floatingFilter=True,resizable=True,minWidth=115)
-        gb.configure_grid_options(domLayout='normal',enableRangeSelection=True)
-        AgGrid(t,gridOptions=gb.build(),height=min(420,max(180,42*len(t)+85)),theme='alpine',fit_columns_on_grid_load=False,allow_unsafe_jscode=False,key=key)
+        from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode, DataReturnMode
     except ImportError:
-        st.dataframe(t,use_container_width=True,hide_index=True,height=min(420,max(180,42*len(t)+85)))
+        st.error('Install streamlit-aggrid in requirements.txt to enable Excel-style filters.')
+        st.dataframe(t, use_container_width=True, hide_index=True)
+        return t
+
+    view = t.copy().reset_index(drop=True)
+    # AG Grid can have difficulty with pandas datetime objects; display dates as text.
+    for column in view.select_dtypes(include=['datetime64[ns]', 'datetimetz']).columns:
+        view[column] = view[column].dt.strftime('%d %b %Y').fillna('')
+    view = view.replace([np.inf, -np.inf], np.nan)
+    for column in view.columns:
+        if pd.api.types.is_object_dtype(view[column]):
+            view[column] = view[column].fillna('').astype(str)
+
+    gb = GridOptionsBuilder.from_dataframe(view)
+    gb.configure_default_column(
+        sortable=True, filter=True, resizable=True,
+        floatingFilter=False, minWidth=135,
+        suppressMenu=False,
+    )
+    for column in view.columns:
+        if pd.api.types.is_numeric_dtype(view[column]):
+            gb.configure_column(column, filter='agNumberColumnFilter',
+                filterParams={'buttons':['apply','clear'], 'closeOnApply':True})
+        else:
+            gb.configure_column(column, filter='agSetColumnFilter',
+                filterParams={
+                    'buttons':['apply','clear'],
+                    'closeOnApply':True,
+                    'excelMode':'windows',
+                    'suppressSelectAll':False,
+                    'suppressMiniFilter':False,
+                })
+    gb.configure_pagination(paginationAutoPageSize=False, paginationPageSize=25)
+    gb.configure_grid_options(
+        animateRows=False, enableCellTextSelection=True, ensureDomOrder=True,
+        suppressRowClickSelection=True,
+        sideBar={'toolPanels':[
+            {'id':'filters','labelDefault':'Filters','labelKey':'filters',
+             'iconKey':'filter','toolPanel':'agFiltersToolPanel'},
+            {'id':'columns','labelDefault':'Columns','labelKey':'columns',
+             'iconKey':'columns','toolPanel':'agColumnsToolPanel'},
+        ], 'defaultToolPanel':''},
+    )
+    response = AgGrid(
+        view, gridOptions=gb.build(), height=height,
+        theme='streamlit', fit_columns_on_grid_load=False,
+        update_mode=GridUpdateMode.FILTERING_CHANGED,
+        data_return_mode=DataReturnMode.FILTERED,
+        enable_enterprise_modules=True,
+        allow_unsafe_jscode=False, key=key,
+    )
+    filtered = response.get('data', view)
+    if filtered is None:
+        filtered = view
+    if not isinstance(filtered, pd.DataFrame):
+        filtered = pd.DataFrame(filtered)
+    if export_name:
+        st.download_button('⬇ Download filtered rows (CSV)',
+            filtered.to_csv(index=False).encode('utf-8-sig'),
+            export_name, 'text/csv', key=f'export_{key}')
+    return filtered
 
 def insight(t,dim):
     if t.empty:return
@@ -162,9 +218,6 @@ if show(2):
 if show(3):
     st.markdown('#### 03 · Monthly financial trends')
     bars(month,'Month',['Revenue','Spending','Profit'],'Revenue vs spending vs profit',height=310)
-    x,y=st.columns(2)
-    with x:bars(month,'Month',['Material Cost'],'Monthly material cost')
-    with y:bars(month,'Month',['Avg Spending'],'Average spend per project')
 if show(4):
     st.markdown('#### 04 · Monthly profit margin')
     bars(month,'Month',['Margin %'],'Profit margin %',kind='line')
@@ -176,8 +229,8 @@ if show(5):
     heat(mr,'Region','Month',met,'Month × Region · '+met)
     pivot_table(mr.sort_values(['Month','Region']),'mr_grid')
 if show(6):
-    st.markdown('#### 06 · KW-wise spending & profit')
-    bars(kw,'KW/PHASE',['Spending','Profit'],'Spending and profit by KW',height=310)
+    st.markdown('#### 06 · KW-wise revenue, spending & profit')
+    bars(kw,'KW/PHASE',['Revenue','Spending','Profit'],'Revenue, spending and profit by KW',height=335)
     insight(kw,'KW/PHASE')
 if show(7):
     st.markdown('#### 07 · KW × Month spending & profit')
@@ -221,8 +274,7 @@ if section in ('All analyses','Interactive Pivot Builder'):
         pivot_table(pt,'custom_grid')
         st.download_button('Download pivot as CSV',pt.to_csv(index=False).encode('utf-8-sig'),'FIN_custom_pivot.csv','text/csv')
     else:st.info('Select at least one dimension and metric.')
-with st.expander('Project-level data · filter, sort and export'):
-    cols=[x for x in ["RNG's",'LEAD','CUS Name','INV DATE- BK','Month','KW/PHASE','DCR/NON-DCR','Module','Region','Project Value','Material Cost','Transportation Cost','Installation Cost','Net meter cost','Vendor Margin','Spending','Profit','Remarks'] if x in d]
-    pivot_table(d[cols].reset_index(drop=True),'projects_grid')
-    st.download_button('Export filtered projects CSV',d[cols].to_csv(index=False).encode('utf-8-sig'),'FIN_projects.csv','text/csv')
+with st.expander('Interactive data details · Excel-style column filters', expanded=False):
+    cols=[x for x in ["RNG's",'LEAD','CUS Name','INV DATE- BK','Month','KW/PHASE','DCR/NON-DCR','Module','Region','Project Value','Material Cost','Transportation Cost','Installation Cost','Net meter cost','Vendor Margin','Spending','Profit','Gross Profit','Remarks'] if x in d]
+    pivot_table(d[cols].reset_index(drop=True),'projects_grid',height=540,export_name='FIN_filtered_projects.csv')
 st.caption('Profit and costs are based on the supplied Excel. Missing cost fields are treated as zero for spending; review incomplete rows before financial decisions.')
