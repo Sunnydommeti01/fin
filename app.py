@@ -8,7 +8,7 @@ import plotly.graph_objects as go
 import streamlit as st
 
 st.set_page_config(page_title='FIN | Financial Intelligence', page_icon='☀️', layout='wide')
-st.markdown('''<style>.block-container{max-width:1550px;padding-top:1rem;padding-bottom:1rem}.stApp{background:#f7f9fd}h1{color:#152b4d;font-size:1.75rem!important}h2,h3{color:#203b5e}div[data-testid="stMetric"]{background:white;border:1px solid #e1e8f1;border-radius:12px;padding:10px 14px}div[data-testid="stMetricValue"]{font-size:1.4rem}section[data-testid="stSidebar"]{background:#eff5fb}div[data-testid="stDataFrame"]{border:1px solid #dfe7f0;border-radius:10px}</style>''',unsafe_allow_html=True)
+st.markdown('''<style>.block-container{max-width:1550px;padding-top:.7rem;padding-bottom:.8rem}.stApp{background:#f7f9fd}h1{color:#152b4d;font-size:1.75rem!important}h2,h3{color:#203b5e}div[data-testid="stMetric"]{background:white;border:1px solid #e1e8f1;border-radius:12px;padding:10px 14px}div[data-testid="stMetricValue"]{font-size:1.4rem}section[data-testid="stSidebar"]{background:#eff5fb}div[data-testid="stDataFrame"]{border:1px solid #dfe7f0;border-radius:10px}</style>''',unsafe_allow_html=True)
 FILE=Path(__file__).parent/'FIN_Financial_Sample_100_Projects.xlsx'
 COSTS=['Material Cost','Transportation Cost','Installation Cost','Net meter cost','Vendor Margin']
 BLUE='#2563eb'; AMBER='#e99a22'; GREEN='#079b78'; RED='#dc4c59'; NAVY='#203b5e'
@@ -67,24 +67,26 @@ def roll(d,keys):
     t['Loss Projects']=d.assign(_loss=d['Profit']<0).groupby(keys,dropna=False,observed=True)['_loss'].sum().to_numpy()
     return t
 
-def layout(fig,height=350):
-    fig.update_layout(height=height,margin=dict(l=8,r=14,t=50,b=25),paper_bgcolor='rgba(0,0,0,0)',plot_bgcolor='rgba(0,0,0,0)',font=dict(color=NAVY,size=12),legend=dict(orientation='h',y=1.15,x=0,title=None),xaxis_title=None,yaxis_title=None)
+def layout(fig,height=305):
+    # Keep titles, legends and data labels in distinct zones.
+    fig.update_layout(height=height,margin=dict(l=12,r=28,t=78,b=42),paper_bgcolor='rgba(0,0,0,0)',plot_bgcolor='rgba(0,0,0,0)',font=dict(color=NAVY,size=11),title=dict(font=dict(size=14),x=0,xanchor='left',y=.98),legend=dict(orientation='h',y=1.09,yanchor='bottom',x=0,xanchor='left',title=None,font=dict(size=10),itemwidth=35),xaxis_title=None,yaxis_title=None,autosize=True)
     fig.update_yaxes(gridcolor='#e7edf5',zerolinecolor='#c9d5e4')
     return fig
 
-def chart(t,key,title,columns=('Revenue','Spending','Profit'),height=365):
+def chart(t,key,title,columns=('Revenue','Spending','Profit'),height=315):
     tmp=t.melt(id_vars=[key],value_vars=list(columns),var_name='Metric',value_name='Amount')
     tmp['Label']=tmp['Amount'].map(inr)
     fig=px.bar(tmp,x=key,y='Amount',color='Metric',barmode='group',text='Label',title=title,color_discrete_map={'Revenue':BLUE,'Spending':AMBER,'Profit':GREEN,'Material Cost':'#805ad5','Spend / Project':'#e99a22','Material / Project':'#805ad5'})
-    fig.update_traces(textposition='outside',textfont_size=10,cliponaxis=False,hovertemplate='%{x}<br>%{fullData.name}: %{text}<extra></extra>')
-    fig.update_layout(uniformtext_minsize=9,uniformtext_mode='show',bargap=.25)
+    fig.update_traces(textposition='outside',textfont_size=9,cliponaxis=False,hovertemplate='%{x}<br>%{fullData.name}: %{text}<extra></extra>')
+    fig.update_layout(uniformtext_minsize=8,uniformtext_mode='hide',bargap=.28)
     layout(fig,height)
     fig.update_yaxes(tickformat='~s',rangemode='tozero')
+    fig.update_layout(margin=dict(t=90,b=50))
     st.plotly_chart(fig,use_container_width=True)
 
 def counts(t,key,title):
-    fig=px.bar(t,x=key,y='Projects',text='Projects',title=title,color_discrete_sequence=[BLUE]);fig.update_traces(textposition='outside',cliponaxis=False)
-    layout(fig,310);fig.update_yaxes(rangemode='tozero',dtick=1 if t['Projects'].max()<12 else None)
+    fig=px.bar(t,x=key,y='Projects',text='Projects',title=title,color_discrete_sequence=[BLUE]);fig.update_traces(textposition='outside',textfont_size=9,cliponaxis=False)
+    layout(fig,285);fig.update_yaxes(rangemode='tozero',dtick=1 if t['Projects'].max()<12 else None)
     st.plotly_chart(fig,use_container_width=True)
 
 def table(t):
@@ -135,20 +137,20 @@ with tabs[0]:
         x,y=st.columns([1.1,1])
         with x:
             fig=px.line(t,x='Month',y='Margin %',markers=True,text=t['Margin %'].map(lambda v:f'{v:.1f}%'),title='3 · Monthly profit margin',color_discrete_sequence=[GREEN]);fig.update_traces(textposition='top center',line_width=3)
-            layout(fig,315);st.plotly_chart(fig,use_container_width=True)
+            layout(fig,290);st.plotly_chart(fig,use_container_width=True)
         with y:
             st.markdown('#### Month-by-month figures');table(t)
         insights(t,'Month')
         st.markdown('#### 4 · Monthly material cost and average spending')
         c1,c2=st.columns(2)
-        with c1: chart(t,'Month','Material cost by invoice month',('Material Cost',),340)
-        with c2: chart(t,'Month','Average spend per project',('Spend / Project',),340)
+        with c1: chart(t,'Month','Material cost by invoice month',('Material Cost',),305)
+        with c2: chart(t,'Month','Average spend per project',('Spend / Project',),305)
         st.markdown('#### 5 · Month-by-month spending breakdown')
         monthly_cost=d[d['Month']!='Unknown'].groupby('Month')[COSTS].sum().reset_index().sort_values('Month')
         cm=monthly_cost.melt('Month',var_name='Cost Type',value_name='Amount')
         fig=px.bar(cm,x='Month',y='Amount',color='Cost Type',barmode='stack',text=cm['Amount'].map(inr),title='Cost composition · all values in ₹')
-        fig.update_traces(textposition='inside',textfont_size=10)
-        layout(fig,400);st.plotly_chart(fig,use_container_width=True)
+        fig.update_traces(textposition='auto',textfont_size=9)
+        layout(fig,335);st.plotly_chart(fig,use_container_width=True)
         table(t[['Month','Projects','Revenue','Spending','Material Cost','Spend / Project','Material / Project','Profit','Margin %','Loss Projects']])
         if len(t)>1:
             z=t.copy();z['Revenue Growth %']=z['Revenue'].pct_change()*100;z['Spending Growth %']=z['Spending'].pct_change()*100
@@ -159,8 +161,8 @@ with tabs[1]:
     counts(t,'Region','1 · Projects by region');chart(t,'Region','2 · Regional revenue, spending & profit')
     st.markdown('#### 3 · Region profitability');table(t);insights(t,'Region')
     c1,c2=st.columns(2)
-    with c1: chart(t,'Region','Average spend by region',('Spend / Project',),340)
-    with c2: chart(t,'Region','Material cost by region',('Material Cost',),340)
+    with c1: chart(t,'Region','Average spend by region',('Spend / Project',),305)
+    with c2: chart(t,'Region','Material cost by region',('Material Cost',),305)
 with tabs[2]:
     st.subheader('Month × Region · Where growth is profitable')
     mr=roll(d[d['Month']!='Unknown'],['Month','Region'])
@@ -171,7 +173,7 @@ with tabs[2]:
         z=pivot.to_numpy(dtype=float)
         labels=[[f'{v:.1f}%' if metric=='Margin %' else str(int(v)) if metric in ('Projects','Loss Projects') else inr(v) if np.isfinite(v) else '—' for v in row] for row in z]
         fig=go.Figure(go.Heatmap(z=z,x=list(pivot.columns),y=list(pivot.index),text=labels,texttemplate='%{text}',textfont=dict(size=11),colorscale='RdYlGn' if metric in ('Profit','Margin %') else 'Blues',colorbar=dict(title=metric),hovertemplate='Region: %{y}<br>Month: %{x}<br>'+metric+': %{text}<extra></extra>'))
-        layout(fig,max(350,65*len(pivot)));st.plotly_chart(fig,use_container_width=True)
+        layout(fig,max(310,42*len(pivot)));st.plotly_chart(fig,use_container_width=True)
         st.markdown('#### Month × Region financial table')
         table(mr.sort_values(['Month','Profit']))
         insights(mr.assign(Group=mr['Month']+' · '+mr['Region']),'Group')
@@ -198,14 +200,9 @@ with tabs[3]:
     grouping=st.selectbox('Compare segments',['KW/PHASE','Module','DCR/NON-DCR','Region'],key='hidden_segment')
     seg=roll(d,grouping).sort_values('Spend / Project',ascending=False)
     c1,c2=st.columns(2)
-    with c1:chart(seg,grouping,'Average spend per project',('Spend / Project',),370)
-    with c2:chart(seg,grouping,'Average material cost per project',('Material / Project',),370)
-    st.markdown('#### 2 · Profit vs project scale')
-    fig=px.scatter(d,x='Project Value',y='Profit',size='Spending',color='Region',hover_data=['KW/PHASE','Module','DCR/NON-DCR'],title='Projects with high revenue but weak profits',size_max=24)
-    fig.add_hline(y=0,line_dash='dash',line_color=RED)
-    layout(fig,390);fig.update_xaxes(tickprefix='₹');fig.update_yaxes(tickprefix='₹')
-    st.plotly_chart(fig,use_container_width=True)
-    st.markdown('#### 3 · Largest individual spending and losses')
+    with c1:chart(seg,grouping,'Average spend per project',('Spend / Project',),305)
+    with c2:chart(seg,grouping,'Average material cost per project',('Material / Project',),305)
+    st.markdown('#### 2 · Largest individual spending and losses')
     st.caption('High absolute spending may simply reflect a larger KW project; review profit margin and spend per KW alongside totals.')
     ids=[c for c in ["RNG's",'LEAD','CUS Name','KW/PHASE','Module','Region','Project Value','Spending','Material Cost','Profit','Margin %','Profit / KW'] if c in d]
     c1,c2=st.columns(2)
@@ -215,7 +212,7 @@ with tabs[3]:
     with c2:
         st.markdown('**Bottom 10 projects by profit**')
         st.dataframe(d.nsmallest(min(10,len(d)),'Profit')[ids],hide_index=True,use_container_width=True,height=350)
-    st.markdown('#### 4 · Unusual material cost per KW')
+    st.markdown('#### 3 · Unusual material cost per KW')
     kw=d.dropna(subset=['Material Cost / KW']).copy()
     if not kw.empty:
         baseline=kw['Material Cost / KW'].median()
@@ -237,14 +234,14 @@ with tabs[6]:
         fig=px.imshow(pv,aspect='auto',text_auto=False,color_continuous_scale='RdYlGn',color_continuous_midpoint=0,title='Profit heatmap · KW × Module')
         for i,kw in enumerate(pv.index):
             for j,mod in enumerate(pv.columns):fig.add_annotation(x=mod,y=kw,text=inr(pv.iloc[i,j]),showarrow=False,font=dict(size=11,color=NAVY))
-        layout(fig,max(330,65*len(pv)));st.plotly_chart(fig,use_container_width=True)
+        layout(fig,max(310,42*len(pv)));st.plotly_chart(fig,use_container_width=True)
     table(t);insights(t.assign(Combination=t['KW/PHASE']+' / '+t['Module']),'Combination')
 with tabs[7]:
     t=roll(d,'DCR/NON-DCR');chart(t,'DCR/NON-DCR','DCR vs Non-DCR spending & profit',('Spending','Profit'));table(t);insights(t,'DCR/NON-DCR')
     st.markdown('#### DCR × KW × Module');table(roll(d,['DCR/NON-DCR','KW/PHASE','Module']).sort_values('Profit'))
 with tabs[8]:
     costs=d[COSTS].sum().sort_values(ascending=False).reset_index();costs.columns=['Cost','Amount'];costs['Label']=costs['Amount'].map(inr)
-    fig=px.bar(costs,x='Cost',y='Amount',text='Label',title='Cost drivers · Total spending by type',color_discrete_sequence=[AMBER]);fig.update_traces(textposition='outside',cliponaxis=False);layout(fig);st.plotly_chart(fig,use_container_width=True)
+    fig=px.bar(costs,x='Cost',y='Amount',text='Label',title='Cost drivers · Total spending by type',color_discrete_sequence=[AMBER]);fig.update_traces(textposition='outside',textfont_size=9,cliponaxis=False);layout(fig,315);st.plotly_chart(fig,use_container_width=True)
     biggest=costs.iloc[0];st.markdown(f'**Largest cost component:** {biggest["Cost"]} — {inr(biggest["Amount"])} ({biggest["Amount"]/spend*100:.1f}% of total spending).' if spend else 'No spending recorded.')
     loss=d[d['Profit']<0];st.markdown(f'**Loss-making projects:** {len(loss)} / {len(d)} · Total losses: {inr(loss["Profit"].sum())}')
     st.markdown('#### Project-level financial records')
