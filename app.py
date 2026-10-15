@@ -7,8 +7,22 @@ import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 
-st.set_page_config(page_title='FIN | Financial Intelligence',page_icon='📊',layout='wide')
-st.markdown('''<style>.block-container{max-width:1540px;padding:0.65rem 1.3rem 1.5rem}.stApp{background:#f6f8fc}h1{font-size:1.65rem!important;color:#142744;margin-bottom:0}h2,h3{color:#17365d}div[data-testid="stMetric"]{background:white;border:1px solid #e3eaf3;border-radius:12px;padding:9px 13px}div[data-testid="stMetricValue"]{font-size:1.35rem}div[data-testid="stVerticalBlock"]{gap:.5rem}section[data-testid="stSidebar"]{background:#eff4fa}</style>''',unsafe_allow_html=True)
+st.set_page_config(page_title='FIN | Financial Intelligence',page_icon='📈',layout='wide')
+st.markdown("""<style>
+.block-container{max-width:1500px;padding:.55rem 1.2rem 2rem}
+.stApp{background:#f6f8fc;color:#182b46}
+h1{font-size:1.72rem!important;letter-spacing:-.04em;color:#142b4c;margin:0}
+h2,h3{color:#19385d}h4{font-size:1.08rem!important;margin:.3rem 0!important}
+[data-testid="stMetric"]{background:white;border:1px solid #e0e9f3;border-radius:13px;padding:10px 14px;box-shadow:0 2px 9px #19385d08}
+[data-testid="stMetricValue"]{font-size:1.38rem!important;color:#173d6a}
+[data-testid="stVerticalBlock"]{gap:.45rem}
+section[data-testid="stSidebar"]{background:#eef4fb}
+[data-testid="stExpander"]{background:white;border:1px solid #dce7f2;border-radius:11px;overflow:hidden}
+[data-testid="stExpander"] summary{font-weight:600;color:#1b426f}
+[data-testid="stTabs"] button{font-size:.88rem}
+[data-testid="stPlotlyChart"]{background:white;border:1px solid #e5ecf5;border-radius:12px;padding:3px 4px}
+hr{margin:.45rem 0}
+</style>""",unsafe_allow_html=True)
 ROOT=Path(__file__).resolve().parent
 COSTS=['Material Cost','Transportation Cost','Installation Cost','Net meter cost','Vendor Margin']
 NUMS=['Project Value','Taxable Value','Dynamic Price','Gross Profit']+COSTS
@@ -85,18 +99,27 @@ def bars(t,x,metrics,title,kind='bar',height=280):
             fig.add_trace(go.Bar(x=t[x],y=t[m],name=m,marker_color=COLORS.get(m,'#7c3aed'),text=[lbl(v,m) for v in t[m]],textposition='outside',textfont=dict(size=9),cliponaxis=False))
         fig.update_layout(barmode='group')
     fig_style(fig,height,legend=len(metrics)>1)
-    fig.update_yaxes(rangemode='tozero')
+    fig.update_yaxes(rangemode='tozero',tickformat='.2s')
     st.plotly_chart(fig,use_container_width=True,config={'displayModeBar':False})
 
 def heat(t,rows,cols,metric,title):
     st.markdown(f'**{title}**')
     if t.empty:st.info('No matching data');return
-    p=t.pivot_table(index=rows,columns=cols,values=metric,aggfunc='sum' if metric!='Margin %' else 'mean',observed=True)
+    if metric=='Margin %':
+        revenue=t.pivot_table(index=rows,columns=cols,values='Revenue',aggfunc='sum',observed=True)
+        profit=t.pivot_table(index=rows,columns=cols,values='Profit',aggfunc='sum',observed=True)
+        p=(profit/revenue.replace(0,np.nan))*100
+    elif metric=='Avg Spending':
+        spending=t.pivot_table(index=rows,columns=cols,values='Spending',aggfunc='sum',observed=True)
+        projects=t.pivot_table(index=rows,columns=cols,values='Projects',aggfunc='sum',observed=True)
+        p=spending/projects.replace(0,np.nan)
+    else:
+        p=t.pivot_table(index=rows,columns=cols,values=metric,aggfunc='sum',observed=True)
     if p.empty:return
     zz=p.to_numpy(dtype=float)
     txt=[[lbl(v,metric) for v in line] for line in zz]
     fig=go.Figure(go.Heatmap(z=zz,x=[str(v) for v in p.columns],y=[str(v) for v in p.index],text=txt,texttemplate='%{text}',textfont=dict(size=10),colorscale='RdYlGn' if metric in ['Profit','Margin %'] else 'Blues',colorbar=dict(title='%',len=.7) if metric=='Margin %' else dict(len=.7),hovertemplate='%{y} × %{x}<br>%{text}<extra></extra>'))
-    fig_style(fig,min(550,max(245,75+len(p)*37)))
+    fig_style(fig,min(530,max(260,90+len(p)*38)))
     st.plotly_chart(fig,use_container_width=True,config={'displayModeBar':False})
 
 def pivot_table(t, key, height=390, export_name=None):
@@ -173,108 +196,158 @@ def insight(t,dim):
     losses=t[t.Profit<0]
     st.caption(f'⚠️ Lowest margin: {worst[dim]} ({lbl(worst["Margin %"],"Margin %")}); profit {money(worst.Profit)}.'+(f' {len(losses)} loss-making group(s).' if len(losses) else ''))
 
-st.title('FIN · Solar Financial Intelligence')
-st.caption('Projects → Revenue → Spending → Profitability | Values in Indian ₹ | Visible chart labels')
+
+# ===============================================================
+# FIN V7 — ONE CLICK PROJECT DETAIL FOR EVERY REPORT
+# ===============================================================
+PROJECT_COLUMNS=["RNG's",'LEAD','CUS Name','INV DATE- BK','Dispatch Date','Month','KW/PHASE','DCR/NON-DCR','Module','Region','Project Value','Taxable Value','Dynamic Price','Material Cost','Transportation Cost','Installation Cost','Net meter cost','Vendor Margin','Spending','Profit','Margin %','Gross Profit','Remarks']
+
+
+def project_view(frame):
+    x=frame.copy()
+    x['Margin %']=np.where(x['Project Value'].ne(0),x['Profit']/x['Project Value']*100,np.nan)
+    return x[[c for c in PROJECT_COLUMNS if c in x.columns]].reset_index(drop=True)
+
+
+def detail_box(report_key, frame, group_dims, description=''):
+    """Independent expandable details and Excel-like column filters per report."""
+    with st.expander('▸ Interactive data details', expanded=False):
+        if description:st.caption(description)
+        search=st.text_input('Search projects',placeholder='Search lead, customer, module, region, amount...',key=f'search_{report_key}')
+        subset=frame
+        if search.strip():
+            q=search.strip().casefold()
+            fields=[c for c in ['LEAD','CUS Name','Region','Module','KW/PHASE','DCR/NON-DCR','Month',"RNG's",'Remarks'] if c in frame]
+            if fields:
+                mask=pd.Series(False,index=frame.index)
+                for c in fields:mask=mask|frame[c].fillna('').astype(str).str.casefold().str.contains(q,regex=False)
+                subset=frame.loc[mask]
+        tab_summary,tab_projects=st.tabs(['Summary / Pivot','Projects'])
+        with tab_summary:
+            if group_dims:
+                result=summary(subset,group_dims).sort_values(group_dims)
+                pivot_table(result,key=f'v7_{report_key}_summary',height=300,export_name=f'FIN_{report_key}_summary.csv')
+            else:
+                result=project_view(subset)
+                pivot_table(result,key=f'v7_{report_key}_summary',height=300,export_name=f'FIN_{report_key}_summary.csv')
+        with tab_projects:
+            st.caption(f'{len(subset):,} matching projects. Click the filter menu in any column header to filter like Excel.')
+            pivot_table(project_view(subset),key=f'v7_{report_key}_projects',height=370,export_name=f'FIN_{report_key}_projects.csv')
+
+
+def section_title(n,title,subtitle):
+    st.markdown(f'#### {n:02d} · {title}')
+    st.caption(subtitle)
+
+st.title('FIN  /  Financial Intelligence')
+st.caption('Solar project profitability  •  Month → Region → KW → Module → DCR  •  ₹ Indian format')
 with st.sidebar:
-    up=st.file_uploader('Replace Excel (optional)',type=['xlsx'])
+    st.markdown('### FIN · Data source')
+    up=st.file_uploader('Upload replacement Excel (optional)',type=['xlsx'])
     files=sorted(ROOT.glob('*.xlsx'))
     path=next((f for f in files if f.name=='FIN_Financial_Sample_100_Projects.xlsx'),files[0] if files else None)
-    st.caption('Source: '+('Uploaded Excel' if up else path.name if path else 'No Excel found'))
-if not up and not path:st.error('Add your Excel file beside app.py or upload it in the sidebar.');st.stop()
+    st.caption('Source: '+('Uploaded Excel' if up else path.name if path else 'No Excel file'))
+if not up and not path:
+    st.error('Place your Excel file beside app.py, or upload it using the sidebar.');st.stop()
 try:df=read_excel(up.getvalue() if up else path.read_bytes())
-except Exception as e:st.error(str(e));st.stop()
+except Exception as exc:st.error(f'Excel loading error: {exc}');st.stop()
 with st.sidebar:
     st.markdown('### Global filters')
     picks={}
     for dim in DIM:
         values=sorted(df[dim].dropna().unique().tolist(),key=str)
-        picks[dim]=st.multiselect(dim,values,default=values)
-    st.caption('Revenue = Project Value. Spending = five listed costs. Profit = Gross Profit where available, otherwise Revenue − Spending.')
+        picks[dim]=st.multiselect(dim,values,default=values,key='global_'+dim)
+    st.caption('Month uses INV DATE- BK. Revenue = Project Value; Profit = Gross Profit where present.')
 d=df.copy()
 for dim in DIM:d=d[d[dim].isin(picks[dim])]
-if d.empty:st.warning('No records match these filters.');st.stop()
-total=summary(d,[] ) if False else None
-rev=d['Project Value'].sum();sp=d.Spending.sum();pr=d.Profit.sum()
-a,b,c,e,f=st.columns(5)
-a.metric('Projects',f'{len(d):,}');b.metric('Revenue',money(rev));c.metric('Spending',money(sp));e.metric('Profit',money(pr));f.metric('Profit margin',f'{pr/rev*100:.1f}%' if rev else '—')
-if abs(rev-sp-pr)>max(100,abs(rev)*.005):st.caption(f'⚠️ Profit reconciliation: Revenue − Spending differs from recorded Gross Profit by {money(rev-sp-pr)}. Verify the accounting definition.')
+if d.empty:st.warning('No records match the filters.');st.stop()
+rev=d['Project Value'].sum();sp=d['Spending'].sum();pr=d['Profit'].sum()
+cols=st.columns(5)
+for c,name,val in zip(cols,['Projects','Revenue','Spending','Gross profit','Profit margin'],[f'{len(d):,}',money(rev),money(sp),money(pr),f'{pr/rev*100:.1f}%' if rev else '—']):c.metric(name,val)
+if abs(rev-sp-pr)>max(100,abs(rev)*.005):
+    st.caption(f'⚠️ Reconciliation: Project Value − listed spending differs from Gross Profit by {money(rev-sp-pr)}. Check the Excel profit definition.')
 
-st.markdown('### Financial story')
-section=st.selectbox('Navigate dashboard', ['All analyses','01 · Month: projects & revenue','02 · Region: projects & revenue','03 · Financial trend graph','04 · Monthly profit margin','05 · Month × Region pivot','06 · KW: spending & profit','07 · KW × Month','08 · KW × Region','09 · Profit heatmap (4 dimensions)','10 · DCR / Non-DCR × Region × Month','Interactive Pivot Builder'],label_visibility='collapsed')
-def show(i):return section=='All analyses' or section.startswith(f'{i:02d} ·')
+st.markdown('### Performance story')
+OPTIONS=['All 10 reports','01 · Month-wise projects & revenue','02 · Region-wise projects & revenue','03 · Financial trend','04 · Monthly profit margin','05 · Month × Region','06 · KW-wise revenue, spending & profit','07 · KW × Month','08 · KW × Region','09 · Profit heatmap','10 · DCR × Region × Month','Custom Pivot Builder']
+nav=st.selectbox('Jump to report',OPTIONS,label_visibility='collapsed')
+def show(n):return nav=='All 10 reports' or nav.startswith(f'{n:02d} ·')
 month=summary(d[d.Month!='Unknown'],['Month']).sort_values('Month')
 region=summary(d,['Region']).sort_values('Revenue',ascending=False)
 kw=summary(d,['KW/PHASE']).sort_values('KW/PHASE')
-if show(1):
-    st.markdown('#### 01 · Month-wise projects & revenue')
-    x,y=st.columns(2)
-    with x:bars(month,'Month',['Projects'],'Monthly project count')
-    with y:bars(month,'Month',['Revenue'],'Monthly revenue')
-if show(2):
-    st.markdown('#### 02 · Region-wise projects & revenue')
-    x,y=st.columns(2)
-    with x:bars(region,'Region',['Projects'],'Projects by region')
-    with y:bars(region,'Region',['Revenue'],'Revenue by region')
-if show(3):
-    st.markdown('#### 03 · Monthly financial trends')
-    bars(month,'Month',['Revenue','Spending','Profit'],'Revenue vs spending vs profit',height=310)
-if show(4):
-    st.markdown('#### 04 · Monthly profit margin')
-    bars(month,'Month',['Margin %'],'Profit margin %',kind='line')
-    insight(month,'Month')
-if show(5):
-    st.markdown('#### 05 · Month × Region financial pivot')
-    mr=summary(d[d.Month!='Unknown'],['Month','Region'])
-    met=st.selectbox('Value',['Projects','Revenue','Spending','Profit','Margin %','Material Cost','Avg Spending'],key='mr_metric')
-    heat(mr,'Region','Month',met,'Month × Region · '+met)
-    pivot_table(mr.sort_values(['Month','Region']),'mr_grid')
-if show(6):
-    st.markdown('#### 06 · KW-wise revenue, spending & profit')
-    bars(kw,'KW/PHASE',['Revenue','Spending','Profit'],'Revenue, spending and profit by KW',height=335)
-    insight(kw,'KW/PHASE')
-if show(7):
-    st.markdown('#### 07 · KW × Month spending & profit')
-    km=summary(d[d.Month!='Unknown'],['KW/PHASE','Month'])
-    met=st.radio('Display',['Spending','Profit'],horizontal=True,key='km_met')
-    heat(km,'KW/PHASE','Month',met,'KW × Month · '+met)
-    pivot_table(km,'km_grid')
-if show(8):
-    st.markdown('#### 08 · KW × Region spending & profit')
-    kr=summary(d,['KW/PHASE','Region'])
-    met=st.radio('Display',['Spending','Profit'],horizontal=True,key='kr_met')
-    heat(kr,'KW/PHASE','Region',met,'KW × Region · '+met)
-    pivot_table(kr,'kr_grid')
-if show(9):
-    st.markdown('#### 09 · Profit heatmap · KW × Module × Region × Month')
-    st.caption('Choose any two axes; filter the remaining dimensions above. This avoids unreadable four-dimensional charts.')
-    a,b,c=st.columns([1,1,1])
-    with a:row=st.selectbox('Heatmap rows',DIM,index=2,key='hrow')
-    with b:col=st.selectbox('Heatmap columns',[x for x in DIM if x!=row],index=2 if len([x for x in DIM if x!=row])>2 else 0,key='hcol')
-    with c:met=st.selectbox('Heatmap value',['Profit','Margin %','Spending','Revenue','Projects'],key='hmet')
-    h=summary(d[d.Month!='Unknown'] if 'Month' in [row,col] else d,[row,col])
-    heat(h,row,col,met,f'{row} × {col} · {met}')
-    pivot_table(h,'heat_grid')
-if show(10):
-    st.markdown('#### 10 · DCR / Non-DCR × Region × Month')
-    x,y=st.columns(2)
-    with x:met=st.selectbox('Measure',['Profit','Spending','Revenue','Projects','Margin %'],key='dcr_metric')
-    with y:axis=st.selectbox('Compare against',['Region','Month'],key='dcr_axis')
-    dd=d[d.Month!='Unknown'] if axis=='Month' else d
-    dc=summary(dd,['DCR/NON-DCR',axis])
-    heat(dc,'DCR/NON-DCR',axis,met,f'DCR status × {axis} · {met}')
-    pivot_table(summary(d[d.Month!='Unknown'],['DCR/NON-DCR','Region','Month']),'dcr_grid')
 
-if section in ('All analyses','Interactive Pivot Builder'):
-    st.markdown('#### Interactive Pivot Builder · Custom Excel-style analysis')
-    c1,c2=st.columns([2,2])
-    with c1:dims=st.multiselect('Group by',DIM,default=['Month','Region'],key='custom_dims')
-    with c2:metrics=st.multiselect('Metrics',['Projects','Revenue','Spending','Profit','Margin %','Material Cost','Avg Spending','Avg Profit'],default=['Projects','Revenue','Spending','Profit','Margin %'],key='custom_metrics')
+if show(1):
+    section_title(1,'Month-wise projects & revenue','Monthly project volume and total project value')
+    a,b=st.columns(2)
+    with a:bars(month,'Month',['Projects'],'Projects by month',height=275)
+    with b:bars(month,'Month',['Revenue'],'Revenue by month',height=275)
+    detail_box('monthly',d,['Month'],'Monthly summary and source projects')
+if show(2):
+    section_title(2,'Region-wise projects & revenue','Which regions contribute most to the business?')
+    a,b=st.columns(2)
+    with a:bars(region,'Region',['Projects'],'Projects by region',height=285)
+    with b:bars(region,'Region',['Revenue'],'Revenue by region',height=285)
+    detail_box('regional',d,['Region'])
+if show(3):
+    section_title(3,'Monthly financial trend','Revenue, total listed spending and recorded gross profit')
+    bars(month,'Month',['Revenue','Spending','Profit'],'Financial trend',height=315)
+    detail_box('trend',d,['Month'])
+if show(4):
+    section_title(4,'Monthly profit margin','Weighted margin = sum of gross profit / sum of project value')
+    bars(month,'Month',['Margin %'],'Gross profit margin (%)',kind='line',height=290)
+    insight(month,'Month')
+    detail_box('margin',d,['Month'])
+if show(5):
+    section_title(5,'Month × Region','Find regional profit and margin pressure month by month')
+    mr=summary(d[d.Month!='Unknown'],['Month','Region'])
+    met=st.selectbox('Heatmap measure',['Profit','Margin %','Revenue','Spending','Projects','Material Cost','Avg Spending'],key='mr_metric')
+    heat(mr,'Region','Month',met,'Month × Region · '+met)
+    detail_box('month_region',d[d.Month!='Unknown'],['Month','Region'])
+if show(6):
+    section_title(6,'KW-wise revenue, spending & profit','Compare system capacity by revenue and cost efficiency')
+    bars(kw,'KW/PHASE',['Revenue','Spending','Profit'],'KW profitability',height=330)
+    insight(kw,'KW/PHASE')
+    detail_box('kw',d,['KW/PHASE'])
+if show(7):
+    section_title(7,'KW × Month','Track capacity-wise spending and profit over time')
+    km=summary(d[d.Month!='Unknown'],['KW/PHASE','Month'])
+    met=st.radio('Measure',['Spending','Profit','Revenue','Margin %'],horizontal=True,key='km_met')
+    heat(km,'KW/PHASE','Month',met,'KW × Month · '+met)
+    detail_box('kw_month',d[d.Month!='Unknown'],['KW/PHASE','Month'])
+if show(8):
+    section_title(8,'KW × Region','Spot expensive capacities in individual regions')
+    kr=summary(d,['KW/PHASE','Region'])
+    met=st.radio('Measure',['Spending','Profit','Revenue','Margin %'],horizontal=True,key='kr_met')
+    heat(kr,'KW/PHASE','Region',met,'KW × Region · '+met)
+    detail_box('kw_region',d,['KW/PHASE','Region'])
+if show(9):
+    section_title(9,'Profit heatmap · KW × Module × Region × Month','Choose two chart axes; use sidebar filters to isolate the remaining dimensions')
+    allowed=['KW/PHASE','Module','Region','Month']
+    a,b,c=st.columns(3)
+    with a:row=st.selectbox('Heatmap rows',allowed,index=0,key='hrow')
+    remaining=[x for x in allowed if x!=row]
+    with b:col=st.selectbox('Heatmap columns',remaining,index=0,key='hcol')
+    with c:met=st.selectbox('Measure',['Profit','Margin %','Spending','Revenue','Projects'],key='hmet')
+    base=d[d.Month!='Unknown'] if 'Month' in [row,col] else d
+    heat(summary(base,[row,col]),row,col,met,f'{row} × {col} · {met}')
+    detail_box('profit_heatmap',base,['KW/PHASE','Module','Region','Month'])
+if show(10):
+    section_title(10,'DCR vs Non-DCR · Region × Month','Compare DCR categories across geography and time')
+    a,b=st.columns(2)
+    with a:met=st.selectbox('Measure',['Profit','Spending','Revenue','Projects','Margin %'],key='dcr_metric')
+    with b:axis=st.selectbox('Compare against',['Region','Month'],key='dcr_axis')
+    base=d[d.Month!='Unknown'] if axis=='Month' else d
+    heat(summary(base,['DCR/NON-DCR',axis]),'DCR/NON-DCR',axis,met,f'DCR status × {axis} · {met}')
+    detail_box('dcr',d[d.Month!='Unknown'],['DCR/NON-DCR','Region','Month'])
+
+if nav in ('All 10 reports','Custom Pivot Builder'):
+    st.markdown('#### Custom Pivot Builder')
+    st.caption('Choose any dimensions and metrics. Filter each pivot column like Excel.')
+    a,b=st.columns(2)
+    with a:dims=st.multiselect('Group by',DIM,default=['Month','Region'],key='pivot_dims')
+    with b:metrics=st.multiselect('Measures',['Projects','Revenue','Spending','Profit','Margin %','Material Cost','Avg Spending','Avg Profit'],default=['Projects','Revenue','Spending','Profit','Margin %'],key='pivot_metrics')
     if dims and metrics:
-        pt=summary(d,dims)[dims+metrics].sort_values(dims)
-        pivot_table(pt,'custom_grid')
-        st.download_button('Download pivot as CSV',pt.to_csv(index=False).encode('utf-8-sig'),'FIN_custom_pivot.csv','text/csv')
-    else:st.info('Select at least one dimension and metric.')
-with st.expander('Interactive data details · Excel-style column filters', expanded=False):
-    cols=[x for x in ["RNG's",'LEAD','CUS Name','INV DATE- BK','Month','KW/PHASE','DCR/NON-DCR','Module','Region','Project Value','Material Cost','Transportation Cost','Installation Cost','Net meter cost','Vendor Margin','Spending','Profit','Gross Profit','Remarks'] if x in d]
-    pivot_table(d[cols].reset_index(drop=True),'projects_grid',height=540,export_name='FIN_filtered_projects.csv')
-st.caption('Profit and costs are based on the supplied Excel. Missing cost fields are treated as zero for spending; review incomplete rows before financial decisions.')
+        t=summary(d,dims)[dims+metrics].sort_values(dims)
+        pivot_table(t,'v7_custom_pivot',height=380,export_name='FIN_custom_pivot.csv')
+    else:st.info('Choose at least one dimension and one measure.')
+
+st.caption('Financial note: Missing cost components count as zero in spending. Confirm Gross Profit and Vendor Margin accounting before treating profit leakage as final.')
