@@ -1,3 +1,35 @@
+import re
+from pathlib import Path
+import numpy as np
+import pandas as pd
+import plotly.express as px
+import streamlit as st
+
+st.set_page_config(page_title='FIN | Solar Financial Intelligence', page_icon='☀️', layout='wide', initial_sidebar_state='expanded')
+st.markdown('''<style>
+.block-container{padding-top:1.1rem;padding-bottom:1rem;max-width:1550px}h1{font-size:1.65rem!important;color:#152744;letter-spacing:-.04em}h2,h3{color:#193150}div[data-testid="stMetric"]{background:#fff;border:1px solid #e3eaf2;border-radius:13px;padding:12px 15px;box-shadow:0 2px 10px #102d4d08}div[data-testid="stMetricLabel"]{font-size:.8rem}div[data-testid="stMetricValue"]{font-size:1.35rem}div[data-testid="stTabs"] button{font-weight:650}section[data-testid="stSidebar"]{background:#f4f8fc} .stApp{background:#f9fbfe}div[data-testid="stDataFrame"]{border:1px solid #e3eaf2;border-radius:10px}</style>''',unsafe_allow_html=True)
+
+DATA_FILE = Path(__file__).parent / 'FIN_Financial_Sample_100_Projects.xlsx'
+COST_COLS = ['Material Cost','Transportation Cost','Installation Cost','Net meter cost','Vendor Margin']
+MONEY_COLS = ['Project Value','Taxable Value','Dynamic Price','Gross Profit']+COST_COLS
+
+@st.cache_data(ttl=60,show_spinner=False)
+def load_data(file_bytes=None):
+    if file_bytes is None:
+        if not DATA_FILE.exists():
+            return None
+        df=pd.read_excel(DATA_FILE)
+    else:
+        from io import BytesIO
+        df=pd.read_excel(BytesIO(file_bytes))
+    df.columns=df.columns.astype(str).str.strip()
+    required=['KW/PHASE','DCR/NON-DCR','Module','Region','Project Value']+COST_COLS
+    missing=[c for c in required if c not in df.columns]
+    if missing: raise ValueError('Missing Excel columns: '+', '.join(missing))
+    for c in MONEY_COLS:
+        if c not in df: df[c]=np.nan
+        df[c]=pd.to_numeric(df[c].astype(str).str.replace(r'[^0-9.\-]','',regex=True),errors='coerce')
+    for c in ['KW/PHASE','DCR/NON-DCR','Module','Region']:
         df[c]=df[c].fillna('Unknown').astype(str).str.strip()
     df['DCR/NON-DCR']=df['DCR/NON-DCR'].str.upper().str.replace('NON DCR','NON-DCR',regex=False)
     df['KW']=pd.to_numeric(df['KW/PHASE'].str.extract(r'(\d+(?:\.\d+)?)')[0],errors='coerce')
@@ -126,3 +158,4 @@ st.markdown('### Project-level financial details')
 show=['RNG\'s','LEAD','CUS Name','INV DATE- BK','KW/PHASE','DCR/NON-DCR','Module','Region','Project Value','Spending','Savings','Savings %']+COST_COLS+['Remarks']
 show=[c for c in show if c in d]
 st.dataframe(d[show],hide_index=True,use_container_width=True,height=330)
+st.download_button('⬇ Export filtered financial data',data=d.to_csv(index=False).encode('utf-8-sig'),file_name='FIN_filtered_financials.csv',mime='text/csv')
