@@ -90,6 +90,26 @@ def summary(df,keys):
     t['Avg Profit']=t.Profit/t.Projects
     return t
 
+def month_label(value):
+    """Display an actual calendar month without allowing Plotly date ticks."""
+    try:
+        return pd.Period(str(value), freq='M').strftime('%b %Y')
+    except (ValueError, TypeError):
+        return str(value)
+
+
+def category_axis(fig, labels, axis='x', monthly=False):
+    """Force exact discrete categories, never a continuous date scale."""
+    values = [str(v) for v in labels]
+    display = [month_label(v) for v in values] if monthly else values
+    opts = dict(type='category', categoryorder='array', categoryarray=values,
+                tickmode='array', tickvals=values, ticktext=display)
+    if axis == 'x':
+        fig.update_xaxes(**opts)
+    else:
+        fig.update_yaxes(**opts)
+
+
 def fig_style(fig,height=280,legend=False):
     fig.update_layout(height=height,margin=dict(l=5,r=12,t=28 if not legend else 42,b=40),paper_bgcolor='rgba(0,0,0,0)',plot_bgcolor='rgba(0,0,0,0)',font=dict(color='#263e5b',size=11),xaxis_title=None,yaxis_title=None,legend=dict(orientation='h',x=0,y=1.13,title=None,font=dict(size=10)),bargap=.28)
     fig.update_yaxes(gridcolor='#e8edf5',zerolinecolor='#cbd5e1')
@@ -109,6 +129,7 @@ def bars(t,x,metrics,title,kind='bar',height=280):
             fig.add_trace(go.Bar(x=t[x],y=t[m],name=m,marker_color=COLORS.get(m,'#7c3aed'),text=[lbl(v,m) for v in t[m]],textposition='outside',textfont=dict(size=9),cliponaxis=False))
         fig.update_layout(barmode='group')
     fig_style(fig,height,legend=len(metrics)>1)
+    category_axis(fig, t[x].tolist(), monthly=(x == 'Month'))
     if len(t)>16:
         fig.update_traces(textposition='none')
         st.caption('Labels hidden for crowded charts; use the detailed table below for exact values.')
@@ -129,11 +150,15 @@ def heat(t,rows,cols,metric,title):
     else:
         p=t.pivot_table(index=rows,columns=cols,values=metric,aggfunc='sum',observed=True)
     if p.empty:return
+    if cols == 'Month': p=p.reindex(sorted(p.columns), axis=1)
+    if rows == 'Month': p=p.reindex(sorted(p.index), axis=0)
     zz=p.to_numpy(dtype=float)
     txt=[[lbl(v,metric) for v in line] for line in zz]
     show_text=(len(p.index)*len(p.columns)<=160)
     fig=go.Figure(go.Heatmap(z=zz,x=[str(v) for v in p.columns],y=[str(v) for v in p.index],text=txt,texttemplate='%{text}' if show_text else None,textfont=dict(size=10),colorscale='RdYlGn' if metric in ['Profit','Margin %'] else 'Blues',colorbar=dict(title='%',len=.7) if metric=='Margin %' else dict(len=.7),hovertemplate='%{y} × %{x}<br>%{text}<extra></extra>'))
     fig_style(fig,min(650,max(280,90+len(p)*30)))
+    category_axis(fig, p.columns.tolist(), axis='x', monthly=(cols == 'Month'))
+    category_axis(fig, p.index.tolist(), axis='y', monthly=(rows == 'Month'))
     if not show_text:st.caption('Dense heatmap: hover for exact amounts, or open Interactive data details for filterable values.')
     st.plotly_chart(fig,use_container_width=True,config={'displayModeBar':False})
 
@@ -274,7 +299,7 @@ with st.sidebar:
     for dim in DIM:
         values=sorted(df[dim].dropna().unique().tolist(),key=str)
         picks[dim]=st.multiselect(dim,values,default=values,key='global_'+dim)
-    st.caption('Month uses INV DATE- BK. Revenue = Project Value; Profit = Gross Profit where present.')
+    st.caption('Calendar months are grouped by invoice date (INV DATE- BK). Revenue = Project Value; Profit = Gross Profit where present.')
     st.caption(f'Source rows: {len(df):,} · Months: {df.Month.nunique()}')
 d=df.copy()
 for dim in DIM:d=d[d[dim].isin(picks[dim])]
@@ -493,6 +518,7 @@ if show(11):
             fig.update_layout(margin=dict(l=8,r=85,t=12,b=25),showlegend=False)
             fig.update_yaxes(automargin=True,gridcolor='rgba(0,0,0,0)')
             fig.update_xaxes(tickformat='.2s',zeroline=True,zerolinecolor='#9ca3af')
+            category_axis(fig, chart_labels.iloc[::-1].tolist(), axis='y')
             st.plotly_chart(fig,use_container_width=True,config={'displayModeBar':False})
         st.markdown('**Top ranking · Excel-filterable financial details**')
         pivot_table(rank_table,'v9_rank_table',height=290,export_name='FIN_top_rankings.csv')
@@ -522,4 +548,4 @@ if nav in ('All 11 reports','Custom Pivot Builder'):
             t=summary(d,dims)[dims+metrics].sort_values(dims)
             pivot_table(t,'v7_custom_pivot',height=380,export_name='FIN_custom_pivot.csv')
         else:st.info('Choose at least one dimension and one measure.')
-st.caption('Financial note: Each Excel row counts as one project. Missing cost components count as zero in spending; validate Gross Profit and Vendor Margin accounting before relying on profitability rankings.')
+st.caption('FIN V11 · Monthly chart axes use discrete calendar-month categories. Financial note: Each Excel row counts as one project. Missing cost components count as zero in spending; validate Gross Profit and Vendor Margin accounting before relying on profitability rankings.')
