@@ -242,7 +242,7 @@ def section_title(n,title,subtitle):
     st.caption(subtitle)
 
 st.title('FIN  /  Financial Intelligence')
-st.caption('Solar project profitability  •  Month → Region → KW → Module → DCR  •  ₹ Indian format')
+st.caption('Solar project profitability  •  Month → Region → KW → Module → DCR → Top 5  •  ₹ Indian format')
 with st.sidebar:
     st.markdown('### FIN · Data source')
     up=st.file_uploader('Upload replacement Excel (optional)',type=['xlsx'])
@@ -270,9 +270,9 @@ if abs(rev-sp-pr)>max(100,abs(rev)*.005):
     st.caption(f'⚠️ Reconciliation: Project Value − listed spending differs from Gross Profit by {money(rev-sp-pr)}. Check the Excel profit definition.')
 
 st.markdown('### Performance story')
-OPTIONS=['All 10 reports','01 · Month-wise projects & revenue','02 · Region-wise projects & revenue','03 · Financial trend','04 · Monthly profit margin','05 · Month × Region','06 · KW-wise revenue, spending & profit','07 · KW × Month','08 · KW × Region','09 · Profit heatmap','10 · DCR × Region × Month','Custom Pivot Builder']
+OPTIONS=['All 11 reports','01 · Month-wise projects & revenue','02 · Region-wise projects & revenue','03 · Financial trend','04 · Monthly profit margin','05 · Month × Region','06 · KW-wise revenue, spending & profit','07 · KW × Month','08 · KW × Region','09 · Profit heatmap','10 · DCR × Region × Month','11 · Top 5 Intelligence','Custom Pivot Builder']
 nav=st.selectbox('Jump to report',OPTIONS,label_visibility='collapsed')
-def show(n):return nav=='All 10 reports' or nav.startswith(f'{n:02d} ·')
+def show(n):return nav=='All 11 reports' or nav.startswith(f'{n:02d} ·')
 month=summary(d[d.Month!='Unknown'],['Month']).sort_values('Month')
 region=summary(d,['Region']).sort_values('Revenue',ascending=False)
 kw=summary(d,['KW/PHASE']).sort_values('KW/PHASE')
@@ -382,15 +382,123 @@ if show(10):
     heat(summary(base,['DCR/NON-DCR',axis]),'DCR/NON-DCR',axis,met,f'DCR status × {axis} · {met}')
     detail_box('dcr',d[d.Month!='Unknown'],['DCR/NON-DCR','Region','Month'])
 
-if nav in ('All 10 reports','Custom Pivot Builder'):
-    st.markdown('#### Custom Pivot Builder')
-    st.caption('Choose any dimensions and metrics. Filter each pivot column like Excel.')
-    a,b=st.columns(2)
-    with a:dims=st.multiselect('Group by',DIM,default=['Month','Region'],key='pivot_dims')
-    with b:metrics=st.multiselect('Measures',['Projects','Revenue','Spending','Profit','Margin %','Material Cost','Avg Spending','Avg Profit'],default=['Projects','Revenue','Spending','Profit','Margin %'],key='pivot_metrics')
-    if dims and metrics:
-        t=summary(d,dims)[dims+metrics].sort_values(dims)
-        pivot_table(t,'v7_custom_pivot',height=380,export_name='FIN_custom_pivot.csv')
-    else:st.info('Choose at least one dimension and one measure.')
 
+# ===============================================================
+# 11 · TOP 5 INTELLIGENCE — RANKING + FULL PROJECT AUDIT
+# ===============================================================
+if show(11):
+    section_title(11, 'Top 5 · Profit & Loss Intelligence',
+        'Rank the best and worst projects, costs and business segments. Every ranking opens its full underlying project data.')
+    rank_options = {
+        'Most profitable projects': ('project', 'Profit', False),
+        'Biggest loss-making projects': ('loss', 'Profit', True),
+        'Highest revenue projects': ('project', 'Project Value', False),
+        'Highest spending projects': ('project', 'Spending', False),
+        'Lowest-margin projects': ('project', 'Margin %', True),
+        'Highest-margin projects': ('project', 'Margin %', False),
+        'Highest material cost projects': ('project', 'Material Cost', False),
+        'Highest transportation cost projects': ('project', 'Transportation Cost', False),
+        'Highest installation cost projects': ('project', 'Installation Cost', False),
+        'Highest net-meter cost projects': ('project', 'Net meter cost', False),
+        'Highest vendor margin projects': ('project', 'Vendor Margin', False),
+        'Most profitable regions': ('Region', 'Profit', False),
+        'Least profitable regions': ('Region', 'Profit', True),
+        'Most profitable months': ('Month', 'Profit', False),
+        'Least profitable months': ('Month', 'Profit', True),
+        'Most profitable KW capacities': ('KW/PHASE', 'Profit', False),
+        'Least profitable KW capacities': ('KW/PHASE', 'Profit', True),
+        'Most profitable modules': ('Module', 'Profit', False),
+        'Least profitable modules': ('Module', 'Profit', True),
+        'Most profitable DCR categories': ('DCR/NON-DCR', 'Profit', False),
+        'Least profitable DCR categories': ('DCR/NON-DCR', 'Profit', True),
+        'Highest-spending regions': ('Region', 'Spending', False),
+        'Highest-spending months': ('Month', 'Spending', False),
+        'Highest-spending KW capacities': ('KW/PHASE', 'Spending', False),
+        'Highest-spending modules': ('Module', 'Spending', False),
+        'Best KW × Module combinations': ('KW/PHASE|Module', 'Profit', False),
+        'Worst KW × Module combinations': ('KW/PHASE|Module', 'Profit', True),
+        'Best Region × Month combinations': ('Region|Month', 'Profit', False),
+        'Worst Region × Month combinations': ('Region|Month', 'Profit', True),
+    }
+    a,b,c=st.columns([2.5,1,1])
+    with a: rank_name=st.selectbox('Choose your Top 5 ranking',list(rank_options),key='v9_rank_choice')
+    with b: rank_size=st.selectbox('Show', [5,10,20],index=0,key='v9_rank_size')
+    with c: chart_measure=st.selectbox('Chart', ['Ranked bars','Table only'],key='v9_rank_chart')
+    category, metric, ascending=rank_options[rank_name]
+    rank_source=d.copy()
+    rank_source['Margin %']=np.where(rank_source['Project Value'].ne(0),
+        100*rank_source['Profit']/rank_source['Project Value'],np.nan)
+    if category in ('project','loss'):
+        if category=='loss':
+            rank_source=rank_source[rank_source['Profit']<0].copy()
+        rank_source=rank_source.dropna(subset=[metric]).sort_values(metric,ascending=ascending,kind='stable').head(rank_size)
+        rank_source['Rank']=range(1,len(rank_source)+1)
+        display_cols=['Rank','LEAD','CUS Name','Month','Region','KW/PHASE','Module','DCR/NON-DCR',
+            'Project Value','Spending','Profit','Margin %','Material Cost','Transportation Cost',
+            'Installation Cost','Net meter cost','Vendor Margin','Remarks']
+        rank_table=rank_source[[x for x in display_cols if x in rank_source]].copy()
+        chart_labels=(rank_source['LEAD'].fillna('').astype(str) if 'LEAD' in rank_source
+            else rank_source.index.astype(str))
+        chart_labels=chart_labels.where(chart_labels.str.strip().ne(''),rank_source.index.astype(str))
+        chart_labels=chart_labels+' · '+rank_source['Region'].astype(str)
+    else:
+        group_dims=category.split('|')
+        rank_all=summary(rank_source,group_dims)
+        if metric=='Margin %':
+            rank_all=rank_all.dropna(subset=['Margin %'])
+        rank_all=rank_all.sort_values(metric,ascending=ascending,kind='stable').head(rank_size).copy()
+        rank_all.insert(0,'Rank',range(1,len(rank_all)+1))
+        rank_table=rank_all
+        chart_labels=rank_all[group_dims].astype(str).agg(' · '.join,axis=1)
+    if rank_table.empty:
+        st.info('No matching projects for this ranking and the selected filters.')
+    else:
+        k1,k2,k3=st.columns(3)
+        k1.metric('Ranked entries',len(rank_table))
+        if category in ('project','loss'):
+            k2.metric('Ranked profit',money(rank_source['Profit'].sum()))
+            k3.metric('Ranked spending',money(rank_source['Spending'].sum()))
+        else:
+            k2.metric('Ranked profit',money(rank_table['Profit'].sum()))
+            k3.metric('Ranked revenue',money(rank_table['Revenue'].sum()))
+        if chart_measure=='Ranked bars':
+            chart_vals=rank_source[metric] if category in ('project','loss') else rank_table[metric]
+            fig=go.Figure(go.Bar(
+                x=chart_vals.iloc[::-1],y=chart_labels.iloc[::-1],orientation='h',
+                marker_color=['#dc4960' if v<0 else '#16826b' for v in chart_vals.iloc[::-1]],
+                text=[lbl(v,metric) for v in chart_vals.iloc[::-1]],
+                textposition='outside',cliponaxis=False,textfont=dict(size=10)))
+            fig_style(fig,min(570,max(250,120+len(rank_table)*39)))
+            fig.update_layout(margin=dict(l=8,r=85,t=12,b=25),showlegend=False)
+            fig.update_yaxes(automargin=True,gridcolor='rgba(0,0,0,0)')
+            fig.update_xaxes(tickformat='.2s',zeroline=True,zerolinecolor='#9ca3af')
+            st.plotly_chart(fig,use_container_width=True,config={'displayModeBar':False})
+        st.markdown('**Top ranking · Excel-filterable financial details**')
+        pivot_table(rank_table,'v9_rank_table',height=290,export_name='FIN_top_rankings.csv')
+        # Always show exact contributing raw projects, not just grouped totals.
+        with st.expander('▸ View full raw projects behind this ranking',expanded=False):
+            if category in ('project','loss'):
+                underlying=rank_source
+            else:
+                keys=rank_table[group_dims].drop_duplicates()
+                underlying=rank_source.merge(keys,on=group_dims,how='inner')
+            st.caption(f'{len(underlying):,} underlying project rows · includes all available original Excel columns')
+            raw_cols=[x for x in PROJECT_COLUMNS if x in underlying]
+            other_cols=[x for x in underlying.columns if x not in raw_cols and x not in ['Cost Complete']]
+            pivot_table(underlying[raw_cols+other_cols].reset_index(drop=True),
+                'v9_rank_raw',height=400,export_name='FIN_top_rankings_raw_projects.csv')
+    detail_box('top5_all',d,['Month','Region','KW/PHASE','Module'],
+        'Full filtered project population for independent investigation and pivoting.')
+
+if nav in ('All 11 reports','Custom Pivot Builder'):
+    with st.expander('▸ Expand custom pivot builder', expanded=False):
+        st.markdown('#### Custom Pivot Builder')
+        st.caption('Choose any dimensions and metrics. Filter each pivot column like Excel.')
+        a,b=st.columns(2)
+        with a:dims=st.multiselect('Group by',DIM,default=['Month','Region'],key='pivot_dims')
+        with b:metrics=st.multiselect('Measures',['Projects','Revenue','Spending','Profit','Margin %','Material Cost','Avg Spending','Avg Profit'],default=['Projects','Revenue','Spending','Profit','Margin %'],key='pivot_metrics')
+        if dims and metrics:
+            t=summary(d,dims)[dims+metrics].sort_values(dims)
+            pivot_table(t,'v7_custom_pivot',height=380,export_name='FIN_custom_pivot.csv')
+        else:st.info('Choose at least one dimension and one measure.')
 st.caption('Financial note: Missing cost components count as zero in spending. Confirm Gross Profit and Vendor Margin accounting before treating profit leakage as final.')
