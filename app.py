@@ -21,6 +21,8 @@ section[data-testid="stSidebar"]{background:#eef4fb}
 [data-testid="stExpander"] summary{font-weight:600;color:#1b426f}
 [data-testid="stTabs"] button{font-size:.88rem}
 [data-testid="stPlotlyChart"]{background:white;border:1px solid #e5ecf5;border-radius:12px;padding:3px 4px}
+.fin-note{background:#fff;border:1px solid #e0e8f1;border-left:3px solid #b45309;border-radius:9px;padding:10px 14px;color:#3a4b60;font-size:.88rem}
+[data-testid="stDataFrame"]{border:1px solid #e4ebf4;border-radius:10px}
 hr{margin:.45rem 0}
 </style>""",unsafe_allow_html=True)
 ROOT=Path(__file__).resolve().parent
@@ -288,8 +290,49 @@ if show(2):
     with b:bars(region,'Region',['Revenue'],'Revenue by region',height=285)
     detail_box('regional',d,['Region'])
 if show(3):
-    section_title(3,'Monthly financial trend','Revenue, total listed spending and recorded gross profit')
+    section_title(3,'Monthly financial trend','Revenue, spending and gross profit · plus a compact monthly loss tracker')
     bars(month,'Month',['Revenue','Spending','Profit'],'Financial trend',height=315)
+
+    # FIN V8: compact, immediately visible pivot beneath Graph 3.
+    # Loss = a project whose recorded/calculated Profit is strictly below zero.
+    monthly_source=d[d['Month']!='Unknown'].copy()
+    monthly_source['Loss Flag']=(monthly_source['Profit']<0).astype(int)
+    monthly_source['Loss Amount']=monthly_source['Profit'].clip(upper=0).abs()
+    monthly_pivot=monthly_source.groupby('Month',observed=True).agg(
+        Projects=('Profit','size'),Revenue=('Project Value','sum'),
+        Spending=('Spending','sum'),Profit=('Profit','sum'),
+        **{'Loss Projects':('Loss Flag','sum'),'Loss Amount':('Loss Amount','sum')}
+    ).reset_index().sort_values('Month')
+    monthly_pivot['Margin %']=np.where(monthly_pivot['Revenue'].ne(0),
+        monthly_pivot['Profit']/monthly_pivot['Revenue']*100,np.nan)
+    st.markdown('**Monthly financial snapshot & losses**')
+    st.caption('Negative-profit projects are counted separately, even when the overall month is profitable. Use the column menus for Excel-style filters.')
+    if not monthly_pivot.empty:
+        loss_count=int(monthly_pivot['Loss Projects'].sum())
+        loss_total=float(monthly_pivot['Loss Amount'].sum())
+        a,b,c=st.columns(3)
+        a.metric('Loss-making projects',f'{loss_count:,}')
+        b.metric('Total losses',money(loss_total))
+        c.metric('Months with losses',f'{int((monthly_pivot["Loss Projects"]>0).sum())}')
+        selected=st.selectbox('Quick pivot view',
+            ['Full financial snapshot','Revenue · Spending · Profit','Loss analysis'],
+            key='v8_monthly_pivot_view',label_visibility='collapsed')
+        cols_by_view={
+            'Full financial snapshot':['Month','Projects','Revenue','Spending','Profit','Margin %','Loss Projects','Loss Amount'],
+            'Revenue · Spending · Profit':['Month','Projects','Revenue','Spending','Profit','Margin %'],
+            'Loss analysis':['Month','Projects','Profit','Margin %','Loss Projects','Loss Amount']
+        }
+        pivot_table(monthly_pivot[cols_by_view[selected]],
+            key='v8_graph3_mini_pivot',height=255,
+            export_name='FIN_monthly_financial_losses.csv')
+        if loss_count:
+            worst=monthly_pivot.loc[monthly_pivot['Loss Amount'].idxmax()]
+            st.markdown('<div class="fin-note">⚠️ Largest monthly loss concentration: '
+                +str(worst['Month'])+' · '+money(worst['Loss Amount'])+
+                ' across '+str(int(worst['Loss Projects']))+' loss-making project(s).</div>',
+                unsafe_allow_html=True)
+        else:
+            st.caption('No negative-profit projects in the selected period.')
     detail_box('trend',d,['Month'])
 if show(4):
     section_title(4,'Monthly profit margin','Weighted margin = sum of gross profit / sum of project value')
