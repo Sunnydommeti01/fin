@@ -28,7 +28,7 @@ hr{margin:.45rem 0}
 </style>""",unsafe_allow_html=True)
 ROOT=Path(__file__).resolve().parent
 COSTS=['Material Cost','Transportation Cost','Installation Cost','Net meter cost','Vendor Margin']
-NUMS=['Project Value','Taxable Value','Dynamic Price','Gross Profit']+COSTS
+NUMS=['Project Value','Taxable Value','Outward GST','Dynamic Price','Gross Profit','Actual GP Percentage']+COSTS
 DIM=['Month','Region','KW/PHASE','Module','DCR/NON-DCR']
 COLORS={'Revenue':'#2563eb','Spending':'#f59e0b','Profit':'#059669','Material Cost':'#7c3aed','Projects':'#2563eb','Margin %':'#059669'}
 
@@ -55,32 +55,88 @@ def parse_dates(v):
     excel=pd.to_datetime(n,unit='D',origin='1899-12-30',errors='coerce')
     return dt.mask(n.between(20000,80000),excel)
 
+def normalize_header(value):
+    """Canonicalize Excel headers including NBSP, zero-width characters and line breaks."""
+    import unicodedata
+    value = unicodedata.normalize('NFKC', str(value))
+    value = re.sub(r'[\u200b-\u200d\ufeff]', '', value)
+    value = re.sub(r'\s+', ' ', value).strip()
+    return value
+
+
+def header_key(value):
+    return re.sub(r'[^a-z0-9]', '', normalize_header(value).casefold())
+
+
+CANONICAL_COLUMNS = [
+    "RNG's", 'LEAD', 'CUS Name', 'INV DATE- BK', 'KW/PHASE',
+    'DCR/NON-DCR', 'Module', 'Project Value', 'Taxable Value',
+    'Outward GST', 'Dynamic Price', 'Vendor Margin', 'Region',
+    'Material Cost', 'Dispatch Date', 'Transportation Cost',
+    'Installation Cost', 'Net meter cost', 'Gross Profit',
+    'Actual GP Percentage', 'Remarks'
+]
+COLUMN_ALIASES = {header_key(name): name for name in CANONICAL_COLUMNS}
+COLUMN_ALIASES.update({
+    'invdatebk': 'INV DATE- BK', 'invoicedate': 'INV DATE- BK',
+    'kwphase': 'KW/PHASE', 'dcrnondcr': 'DCR/NON-DCR',
+    'netmeteringcost': 'Net meter cost',
+    'grossprofitpercentage': 'Actual GP Percentage',
+    'actualgppercent': 'Actual GP Percentage',
+})
+REQUIRED_COLUMNS = ['Project Value','KW/PHASE','Module','DCR/NON-DCR','Region','INV DATE- BK']
+
+
+def find_data_sheet(raw):
+    """Search every sheet's first 25 rows for the real table header."""
+    workbook = pd.ExcelFile(BytesIO(raw), engine='openpyxl')
+    best = None
+    for sheet in workbook.sheet_names:
+        preview = pd.read_excel(workbook, sheet_name=sheet, header=None, nrows=25, dtype=object)
+        for row_idx, row in preview.iterrows():
+            keys = {COLUMN_ALIASES.get(header_key(v)) for v in row if pd.notna(v)}
+            matched = len(keys.intersection(REQUIRED_COLUMNS))
+            if best is None or matched > best[0]:
+                best = (matched, sheet, int(row_idx))
+            if matched == len(REQUIRED_COLUMNS):
+                return workbook, sheet, int(row_idx)
+    if best is None or best[0] < 4:
+        raise ValueError('Could not locate the financial data header in the first 25 rows of any worksheet. Check that the selected Excel file contains your project table.')
+    return workbook, best[1], best[2]
+
+
 @st.cache_data(ttl=600,show_spinner=False,max_entries=4)
 def read_excel(raw):
-    df=pd.read_excel(BytesIO(raw),engine='openpyxl')
-    df.columns=df.columns.astype(str).str.strip()
-    df=df.dropna(how='all').reset_index(drop=True)
+    workbook, sheet, header_row = find_data_sheet(raw)
+    df = pd.read_excel(workbook, sheet_name=sheet, header=header_row, engine='openpyxl')
+    df.columns = [COLUMN_ALIASES.get(header_key(c), normalize_header(c)) for c in df.columns]
     if df.columns.duplicated().any():
-        raise ValueError('Duplicate Excel column names: '+', '.join(df.columns[df.columns.duplicated()]))
-    needed=['Project Value','KW/PHASE','Module','DCR/NON-DCR','Region','INV DATE- BK']
-    missing=[x for x in needed if x not in df]
-    if missing:raise ValueError('Missing Excel columns: '+', '.join(missing))
-    for x in NUMS:
-        if x not in df:df[x]=np.nan
-        df[x]=pd.to_numeric(df[x].astype(str).str.replace(r'[^0-9.\-]','',regex=True),errors='coerce')
-    for x in ['KW/PHASE','Module','DCR/NON-DCR','Region']:
-        df[x]=df[x].fillna('Unknown').astype(str).str.strip().replace('', 'Unknown')
-    df['DCR/NON-DCR']=df['DCR/NON-DCR'].str.upper().str.replace('NON DCR','NON-DCR',regex=False)
-    df['INV DATE- BK']=parse_dates(df['INV DATE- BK'])
-    df['Month']=df['INV DATE- BK'].dt.strftime('%Y-%m').fillna('Unknown')
-    df['Month']=df['Month'].astype(str)
-    # One Excel row = one project. Do not silently drop repeated lead IDs.
-    df['Spending']=df[COSTS].fillna(0).sum(axis=1)
-    df['Missing Cost Fields']=df[COSTS].isna().sum(axis=1)
-    df['Profit']=df['Gross Profit'].where(df['Gross Profit'].notna(),df['Project Value']-df['Spending'])
-    df['Material Cost']=df['Material Cost'].fillna(0)
-    df['Cost Complete']=df[COSTS].notna().all(axis=1)
-    df['Profit Source']=np.where(df['Gross Profit'].notna(),'Excel Gross Profit','Revenue less listed costs')
+        duplicated = df.columns[df.columns.duplicated()].tolist()
+        raise ValueError('Multiple Excel columns map to the same name: ' + ', '.join(duplicated))
+    missing = [c for c in REQUIRED_COLUMNS if c not in df.columns]
+    if missing:
+        raise ValueError(f'Sheet {sheet!r}, header row {header_row+1}: missing columns: {missing}. Detected headers: {df.columns.tolist()}')
+    df = df.dropna(how='all').reset_index(drop=True)
+    # Exclude footer and total rows, while retaining records that have a lead or financial data.
+    df = df.loc[df[['INV DATE- BK','Project Value','LEAD'] if 'LEAD' in df else ['INV DATE- BK','Project Value']].notna().any(axis=1)].copy()
+    for c in NUMS:
+        if c not in df.columns:
+            df[c] = np.nan
+        series = df[c].astype(str).str.replace(',', '', regex=False).str.replace(r'[^0-9.\-]', '', regex=True)
+        df[c] = pd.to_numeric(series, errors='coerce')
+    for c in ['KW/PHASE','Module','DCR/NON-DCR','Region']:
+        df[c] = df[c].fillna('Unknown').astype(str).str.strip().replace('', 'Unknown')
+    df['DCR/NON-DCR'] = df['DCR/NON-DCR'].str.upper().str.replace('NON DCR','NON-DCR',regex=False)
+    df['INV DATE- BK'] = parse_dates(df['INV DATE- BK'])
+    df['Month'] = df['INV DATE- BK'].dt.strftime('%Y-%m').fillna('Unknown').astype(str)
+    df['Spending'] = df[COSTS].fillna(0).sum(axis=1)
+    df['Missing Cost Fields'] = df[COSTS].isna().sum(axis=1)
+    df['Profit'] = df['Gross Profit'].where(df['Gross Profit'].notna(), df['Project Value'] - df['Spending'])
+    df['Cost Complete'] = df[COSTS].notna().all(axis=1)
+    df['Material Cost'] = df['Material Cost'].fillna(0)
+    df['Profit Source'] = np.where(df['Gross Profit'].notna(), 'Excel Gross Profit', 'Revenue less listed costs')
+    df.attrs['source_sheet'] = sheet
+    df.attrs['header_row'] = header_row + 1
     return df
 
 def summary(df,keys):
@@ -240,7 +296,7 @@ def insight(t,dim):
 # ===============================================================
 # FIN V7 — ONE CLICK PROJECT DETAIL FOR EVERY REPORT
 # ===============================================================
-PROJECT_COLUMNS=["RNG's",'LEAD','CUS Name','INV DATE- BK','Dispatch Date','Month','KW/PHASE','DCR/NON-DCR','Module','Region','Project Value','Taxable Value','Dynamic Price','Material Cost','Transportation Cost','Installation Cost','Net meter cost','Vendor Margin','Spending','Profit','Margin %','Gross Profit','Remarks']
+PROJECT_COLUMNS=["RNG's",'LEAD','CUS Name','INV DATE- BK','Dispatch Date','Month','KW/PHASE','DCR/NON-DCR','Module','Region','Project Value','Taxable Value','Outward GST','Dynamic Price','Actual GP Percentage','Material Cost','Transportation Cost','Installation Cost','Net meter cost','Vendor Margin','Spending','Profit','Margin %','Gross Profit','Remarks']
 
 
 def project_view(frame):
@@ -294,6 +350,7 @@ if not up and not path:
 try:df=read_excel(up.getvalue() if up else path.read_bytes())
 except Exception as exc:st.error(f'Excel loading error: {exc}');st.stop()
 with st.sidebar:
+    st.caption(f"Detected worksheet: {df.attrs.get('source_sheet', 'Unknown')} · Header row: {df.attrs.get('header_row', '?')}")
     st.markdown('### Global filters')
     picks={}
     for dim in DIM:
