@@ -131,16 +131,22 @@ def read_excel(raw):
     df['Month'] = df['INV DATE- BK'].dt.strftime('%Y-%m').fillna('Unknown').astype(str)
     df['Spending'] = df[COSTS].fillna(0).sum(axis=1)
     df['Missing Cost Fields'] = df[COSTS].isna().sum(axis=1)
-    df['Profit'] = df['Gross Profit'].where(df['Gross Profit'].notna(), df['Project Value'] - df['Spending'])
+    # Profit is calculated on the taxable (ex-GST) revenue base.
+    # Preserve Excel GP when present; fallback only when taxable value is available.
+    df['Calculated GP'] = df['Taxable Value'] - df['Spending']
+    df['Profit'] = df['Gross Profit'].where(df['Gross Profit'].notna(), df['Calculated GP'])
+    df['GP Difference'] = df['Calculated GP'] - df['Gross Profit']
+    df['Margin %'] = np.where(df['Taxable Value'].ne(0) & df['Taxable Value'].notna(),
+                              100 * df['Profit'] / df['Taxable Value'], np.nan)
     df['Cost Complete'] = df[COSTS].notna().all(axis=1)
     df['Material Cost'] = df['Material Cost'].fillna(0)
-    df['Profit Source'] = np.where(df['Gross Profit'].notna(), 'Excel Gross Profit', 'Revenue less listed costs')
+    df['Profit Source'] = np.where(df['Gross Profit'].notna(), 'Excel Gross Profit', 'Taxable Value less listed costs')
     df.attrs['source_sheet'] = sheet
     df.attrs['header_row'] = header_row + 1
     return df
 
 def summary(df,keys):
-    t=df.groupby(keys,dropna=False,observed=True).agg(Projects=('Project Value','size'),Revenue=('Project Value','sum'),Spending=('Spending','sum'),Profit=('Profit','sum'),**{'Material Cost':('Material Cost','sum')}).reset_index()
+    t=df.groupby(keys,dropna=False,observed=True).agg(Projects=('Project Value','size'),**{'Project Value':('Project Value','sum')},Revenue=('Taxable Value','sum'),Spending=('Spending','sum'),Profit=('Profit','sum'),**{'Material Cost':('Material Cost','sum')}).reset_index()
     t['Margin %']=np.where(t.Revenue.ne(0),100*t.Profit/t.Revenue,np.nan)
     t['Avg Spending']=t.Spending/t.Projects
     t['Avg Profit']=t.Profit/t.Projects
@@ -296,12 +302,12 @@ def insight(t,dim):
 # ===============================================================
 # FIN V7 — ONE CLICK PROJECT DETAIL FOR EVERY REPORT
 # ===============================================================
-PROJECT_COLUMNS=["RNG's",'LEAD','CUS Name','INV DATE- BK','Dispatch Date','Month','KW/PHASE','DCR/NON-DCR','Module','Region','Project Value','Taxable Value','Outward GST','Dynamic Price','Actual GP Percentage','Material Cost','Transportation Cost','Installation Cost','Net meter cost','Vendor Margin','Spending','Profit','Margin %','Gross Profit','Remarks']
+PROJECT_COLUMNS=["RNG's",'LEAD','CUS Name','INV DATE- BK','Dispatch Date','Month','KW/PHASE','DCR/NON-DCR','Module','Region','Project Value','Taxable Value','Outward GST','Dynamic Price','Actual GP Percentage','Material Cost','Transportation Cost','Installation Cost','Net meter cost','Vendor Margin','Spending','Calculated GP','Profit','GP Difference','Margin %','Gross Profit','Profit Source','Missing Cost Fields','Remarks']
 
 
 def project_view(frame):
     x=frame.copy()
-    x['Margin %']=np.where(x['Project Value'].ne(0),x['Profit']/x['Project Value']*100,np.nan)
+    x['Margin %']=np.where(x['Taxable Value'].ne(0),x['Profit']/x['Taxable Value']*100,np.nan)
     return x[[c for c in PROJECT_COLUMNS if c in x.columns]].reset_index(drop=True)
 
 
@@ -356,20 +362,39 @@ with st.sidebar:
     for dim in DIM:
         values=sorted(df[dim].dropna().unique().tolist(),key=str)
         picks[dim]=st.multiselect(dim,values,default=values,key='global_'+dim)
-    st.caption('Calendar months are grouped by invoice date (INV DATE- BK). Revenue = Project Value; Profit = Gross Profit where present.')
+    st.caption('Calendar months are grouped by invoice date (INV DATE- BK). Revenue = Taxable Value (ex-GST); Project Value shown separately; Profit = Excel Gross Profit where present.')
     st.caption(f'Source rows: {len(df):,} · Months: {df.Month.nunique()}')
 d=df.copy()
 for dim in DIM:d=d[d[dim].isin(picks[dim])]
 if d.empty:st.warning('No records match the filters.');st.stop()
 if len(d)>0 and d['INV DATE- BK'].isna().any():
     st.caption(f'ℹ️ {int(d["INV DATE- BK"].isna().sum()):,} rows have missing/unreadable invoice dates; they appear as Unknown Month and are excluded from monthly charts.')
-rev=d['Project Value'].sum();sp=d['Spending'].sum();pr=d['Profit'].sum()
-cols=st.columns(5)
-for c,name,val in zip(cols,['Projects','Revenue','Spending','Gross profit','Profit margin'],[f'{len(d):,}',money(rev),money(sp),money(pr),f'{pr/rev*100:.1f}%' if rev else '—']):c.metric(name,val)
+rev=d['Taxable Value'].sum();project_value=d['Project Value'].sum();sp=d['Spending'].sum();pr=d['Profit'].sum()
+cols=st.columns(6)
+for c,name,val in zip(cols,['Projects','Project value','Taxable revenue','Spending','Gross profit','GP margin'],[f'{len(d):,}',money(project_value),money(rev),money(sp),money(pr),f'{pr/rev*100:.1f}%' if rev else '—']):c.metric(name,val)
 if d['Missing Cost Fields'].gt(0).any():
     st.caption(f'⚠️ {int(d["Missing Cost Fields"].gt(0).sum()):,} projects have missing cost fields. Missing values are provisionally treated as ₹0 in Spending.')
-if abs(rev-sp-pr)>max(100,abs(rev)*.005):
-    st.caption(f'⚠️ Reconciliation: Project Value − listed spending differs from Gross Profit by {money(rev-sp-pr)}. Check the Excel profit definition.')
+# Compare only projects with an actual Excel GP, taxable value and complete cost fields.
+check=d.loc[d['Gross Profit'].notna() & d['Taxable Value'].notna() & d['Cost Complete']].copy()
+if not check.empty:
+    tolerance=1.0
+    exceptions=check.loc[check['GP Difference'].abs()>tolerance]
+    if not exceptions.empty:
+        st.warning(f'GP reconciliation: {len(exceptions):,} of {len(check):,} comparable projects differ by more than ₹{tolerance:,.0f}. Net difference: {money(exceptions["GP Difference"].sum())}; total absolute difference: {money(exceptions["GP Difference"].abs().sum())}. Formula: Taxable Value − all five costs − Excel Gross Profit.')
+        with st.expander('▸ Inspect GP reconciliation differences',expanded=False):
+            columns=[c for c in ['LEAD','CUS Name','Month','Region','Taxable Value']+COSTS+['Spending','Calculated GP','Gross Profit','GP Difference'] if c in exceptions]
+            pivot_table(exceptions[columns].sort_values('GP Difference',key=lambda v:v.abs(),ascending=False),key='gp_reconciliation',height=330,export_name='FIN_GP_reconciliation.csv')
+missing_taxable=d['Taxable Value'].isna().sum()
+if missing_taxable:
+    st.warning(f'{missing_taxable:,} projects have no Taxable Value; their calculated GP and margin cannot be determined unless an Excel Gross Profit exists.')
+
+with st.expander('▸ Data quality · missing cost fields and taxable revenue', expanded=False):
+    issues=d.loc[d['Missing Cost Fields'].gt(0) | d['Taxable Value'].isna()]
+    if issues.empty:
+        st.success('No missing cost or taxable revenue fields in the selected records.')
+    else:
+        cols=[c for c in ['LEAD','CUS Name','Month','Region','Project Value','Taxable Value']+COSTS+['Missing Cost Fields','Profit','Profit Source'] if c in issues]
+        pivot_table(issues[cols],key='missing_cost_audit',height=300,export_name='FIN_missing_financial_fields.csv')
 
 st.markdown('### Performance story')
 OPTIONS=['All 11 reports','01 · Month-wise projects & revenue','02 · Region-wise projects & revenue','03 · Financial trend','04 · Monthly profit margin','05 · Month × Region','06 · KW-wise revenue, spending & profit','07 · KW × Month','08 · KW × Region','09 · Profit heatmap','10 · DCR × Region × Month','11 · Top 5 Intelligence','Custom Pivot Builder']
@@ -402,7 +427,7 @@ if show(3):
     monthly_source['Loss Flag']=(monthly_source['Profit']<0).astype(int)
     monthly_source['Loss Amount']=monthly_source['Profit'].clip(upper=0).abs()
     monthly_pivot=monthly_source.groupby('Month',observed=True).agg(
-        Projects=('Profit','size'),Revenue=('Project Value','sum'),
+        Projects=('Profit','size'),Revenue=('Taxable Value','sum'),
         Spending=('Spending','sum'),Profit=('Profit','sum'),
         **{'Loss Projects':('Loss Flag','sum'),'Loss Amount':('Loss Amount','sum')}
     ).reset_index().sort_values('Month')
@@ -529,15 +554,15 @@ if show(11):
     with c: chart_measure=st.selectbox('Chart', ['Ranked bars','Table only'],key='v9_rank_chart')
     category, metric, ascending=rank_options[rank_name]
     rank_source=d.copy()
-    rank_source['Margin %']=np.where(rank_source['Project Value'].ne(0),
-        100*rank_source['Profit']/rank_source['Project Value'],np.nan)
+    rank_source['Margin %']=np.where(rank_source['Taxable Value'].ne(0),
+        100*rank_source['Profit']/rank_source['Taxable Value'],np.nan)
     if category in ('project','loss'):
         if category=='loss':
             rank_source=rank_source[rank_source['Profit']<0].copy()
         rank_source=rank_source.dropna(subset=[metric]).sort_values(metric,ascending=ascending,kind='stable').head(rank_size)
         rank_source['Rank']=range(1,len(rank_source)+1)
         display_cols=['Rank','LEAD','CUS Name','Month','Region','KW/PHASE','Module','DCR/NON-DCR',
-            'Project Value','Spending','Profit','Margin %','Material Cost','Transportation Cost',
+            'Project Value','Taxable Value','Spending','Calculated GP','Profit','GP Difference','Margin %','Material Cost','Transportation Cost',
             'Installation Cost','Net meter cost','Vendor Margin','Remarks']
         rank_table=rank_source[[x for x in display_cols if x in rank_source]].copy()
         chart_labels=(rank_source['LEAD'].fillna('').astype(str) if 'LEAD' in rank_source
