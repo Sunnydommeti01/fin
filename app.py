@@ -341,34 +341,35 @@ def section_title(n,title,subtitle):
     st.markdown(f'#### {n:02d} · {title}')
     st.caption(subtitle)
 
-overview_tab,predictive_tab=st.tabs(['📊 Overview of Data','🔮 Predictive Analysis'])
-with overview_tab:
-    st.title('FIN  /  Financial Intelligence')
-    st.caption('Solar project profitability  •  Month → Region → KW → Module → DCR → Top 5  •  ₹ Indian format')
-    with st.sidebar:
-        st.markdown('### FIN · Data source')
-        up=st.file_uploader('Upload replacement Excel (optional)',type=['xlsx'])
-        files=sorted((f for f in ROOT.glob('*.xlsx') if not f.name.startswith('~$')),key=lambda f:f.name)
-        preferred=next((f for f in files if f.name.lower() in ('fin_data.xlsx','financial_data.xlsx')),None)
-        default_index=files.index(preferred) if preferred else 0
-        path=st.selectbox('Excel file in repository',files,index=default_index,format_func=lambda f:f.name) if files and up is None else None
-        st.caption('Source: '+('Uploaded Excel' if up else path.name if path else 'No Excel file'))
-    if not up and not path:
-        st.error('Place your Excel file beside app.py, or upload it using the sidebar.');st.stop()
-    try:df=read_excel(up.getvalue() if up else path.read_bytes())
-    except Exception as exc:st.error(f'Excel loading error: {exc}');st.stop()
-    with st.sidebar:
-        st.caption(f"Detected worksheet: {df.attrs.get('source_sheet', 'Unknown')} · Header row: {df.attrs.get('header_row', '?')}")
-        st.markdown('### Global filters')
-        picks={}
-        for dim in DIM:
-            values=sorted(df[dim].dropna().unique().tolist(),key=str)
-            picks[dim]=st.multiselect(dim,values,default=values,key='global_'+dim)
-        st.caption('Calendar months are grouped by invoice date (INV DATE- BK). Revenue = Project Value; GP margin = Profit / Project Value. Accounting GP reconciliation still uses Taxable Value minus costs.')
-        st.caption(f'Source rows: {len(df):,} · Months: {df.Month.nunique()}')
-    d=df.copy()
-    for dim in DIM:d=d[d[dim].isin(picks[dim])]
-    if d.empty:st.warning('No records match the filters.');st.stop()
+st.title('FIN / Financial Intelligence')
+st.caption('FIN V16 · Project Value financial overview and predictive intelligence')
+page = st.radio('Dashboard view', ['📊 Overview of Data', '🔮 Predictive Analysis'], horizontal=True, key='fin_main_view')
+
+with st.sidebar:
+    st.markdown('### FIN · Data source')
+    up=st.file_uploader('Upload replacement Excel (optional)',type=['xlsx'])
+    files=sorted((f for f in ROOT.glob('*.xlsx') if not f.name.startswith('~$')),key=lambda f:f.name)
+    preferred=next((f for f in files if f.name.lower() in ('fin_data.xlsx','financial_data.xlsx')),None)
+    default_index=files.index(preferred) if preferred else 0
+    path=st.selectbox('Excel file in repository',files,index=default_index,format_func=lambda f:f.name) if files and up is None else None
+    st.caption('Source: '+('Uploaded Excel' if up else path.name if path else 'No Excel file'))
+if not up and not path:
+    st.error('Place your Excel file beside app.py, or upload it using the sidebar.');st.stop()
+try:df=read_excel(up.getvalue() if up else path.read_bytes())
+except Exception as exc:st.error(f'Excel loading error: {exc}');st.stop()
+with st.sidebar:
+    st.caption(f"Detected worksheet: {df.attrs.get('source_sheet', 'Unknown')} · Header row: {df.attrs.get('header_row', '?')}")
+    st.markdown('### Global filters')
+    picks={}
+    for dim in DIM:
+        values=sorted(df[dim].dropna().unique().tolist(),key=str)
+        picks[dim]=st.multiselect(dim,values,default=values,key='global_'+dim)
+    st.caption('Calendar months are grouped by invoice date (INV DATE- BK). Revenue = Project Value; GP margin = Profit / Project Value. Accounting GP reconciliation still uses Taxable Value minus costs.')
+    st.caption(f'Source rows: {len(df):,} · Months: {df.Month.nunique()}')
+d=df.copy()
+for dim in DIM:d=d[d[dim].isin(picks[dim])]
+if d.empty:st.warning('No records match the filters.');st.stop()
+if page == '📊 Overview of Data':
     if len(d)>0 and d['INV DATE- BK'].isna().any():
         st.caption(f'ℹ️ {int(d["INV DATE- BK"].isna().sum()):,} rows have missing/unreadable invoice dates; they appear as Unknown Month and are excluded from monthly charts.')
     rev=d['Project Value'].sum();taxable_revenue=d['Taxable Value'].sum();sp=d['Spending'].sum();pr=d['Profit'].sum()
@@ -632,14 +633,14 @@ with overview_tab:
                 t=summary(d,dims)[dims+metrics].sort_values(dims)
                 pivot_table(t,'v7_custom_pivot',height=380,export_name='FIN_custom_pivot.csv')
             else:st.info('Choose at least one dimension and one measure.')
-    st.caption('FIN V11 · Monthly chart axes use discrete calendar-month categories. Financial note: Revenue and GP margin use Project Value; calculated GP and reconciliation use Taxable Value. Each Excel row counts as one project. Missing cost components count as zero in spending; validate Gross Profit and Vendor Margin accounting before relying on profitability rankings.')
+    st.caption('FIN V16 · Monthly chart axes use discrete calendar-month categories. Financial note: Revenue and GP margin use Project Value; calculated GP and reconciliation use Taxable Value. Each Excel row counts as one project. Missing cost components count as zero in spending; validate Gross Profit and Vendor Margin accounting before relying on profitability rankings.')
 
 # ============================================================
 # FIN V15 — PREDICTIVE FINANCIAL INTELLIGENCE
 # All projections are based on Project Value (not Taxable Value).
 # No causal claims: driver decomposition is descriptive.
 # ============================================================
-with predictive_tab:
+if page == '🔮 Predictive Analysis':
     st.title('FIN  /  Predictive Financial Intelligence')
     st.caption('Project Value forecasting • Region outlook • Profitability • Cost drivers • Loss exposure')
     st.info('Forecasts are statistical planning scenarios, not guaranteed outcomes. Six or fewer months of history can produce unstable estimates. Predictions use only the records matching the global filters on the Overview tab.')
